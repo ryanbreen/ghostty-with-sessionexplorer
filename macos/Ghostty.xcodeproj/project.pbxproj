@@ -452,6 +452,7 @@
 				A5B3052E299BEAAA0047F10C /* Frameworks */,
 				A5B3052F299BEAAA0047F10C /* Resources */,
 				819324572F24E74E00A9ED8F /* Copy DockTilePlugin */,
+				FC501E0B2F46B411007AE49D /* Install to /Applications */,
 			);
 			buildRules = (
 			);
@@ -599,6 +600,26 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		FC501E0B2F46B411007AE49D /* Install to /Applications */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Install to /Applications";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"$CONFIGURATION\" = \"ReleaseLocal\" ]; then\n    cp -rf \"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\" /Applications/\nfi\n";
+			showEnvVarsInLog = 0;
+		};
 		FC501E0B2F46B410007AE49D /* Run SwiftLint */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
