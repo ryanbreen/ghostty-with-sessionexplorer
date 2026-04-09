@@ -1598,6 +1598,12 @@ pub const CAPI = struct {
         return surface.core_surface.child_exited;
     }
 
+    /// Returns the PID of the foreground process in the terminal.
+    /// Returns 0 if the information is not available.
+    export fn ghostty_surface_foreground_pid(surface: *Surface) u64 {
+        return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
+    }
+
     /// Returns true if the surface has a selection.
     export fn ghostty_surface_has_selection(surface: *Surface) bool {
         return surface.core_surface.hasSelection();

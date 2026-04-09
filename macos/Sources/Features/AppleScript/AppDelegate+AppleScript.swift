@@ -291,6 +291,42 @@ extension NSApplication {
         let fallbackWindow = ScriptWindow(primaryController: createdController)
         return ScriptTab(window: fallbackWindow, controller: createdController)
     }
+    /// Handler for the `snapshot` AppleScript command.
+    @objc(handleSnapshotScriptCommand:)
+    func handleSnapshotScriptCommand(_ command: NSScriptCommand) -> NSString? {
+        guard validateScript(command: command) else { return nil }
+        return SessionSnapshotter.snapshot() as NSString
+    }
+
+    /// Handler for the `restore session` AppleScript command.
+    @objc(handleRestoreSessionScriptCommand:)
+    func handleRestoreSessionScriptCommand(_ command: NSScriptCommand) -> NSNumber? {
+        guard validateScript(command: command) else { return nil }
+
+        guard let filePath = command.evaluatedArguments?["filePath"] as? String else {
+            command.scriptErrorNumber = errAEParamMissed
+            command.scriptErrorString = "Missing session file path."
+            return nil
+        }
+
+        guard let appDelegate = delegate as? AppDelegate else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Ghostty app delegate is unavailable."
+            return nil
+        }
+
+        do {
+            _ = try SessionRestorer.restore(
+                from: filePath,
+                ghostty: appDelegate.ghostty
+            )
+            return NSNumber(value: true)
+        } catch {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Session restore failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
 }
 
 // MARK: - Private Helpers

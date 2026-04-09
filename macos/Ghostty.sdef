@@ -28,6 +28,12 @@
       <responds-to command="quit">
         <cocoa method="handleQuitScriptCommand:"/>
       </responds-to>
+      <responds-to command="restore session">
+        <cocoa method="handleRestoreSessionScriptCommand:"/>
+      </responds-to>
+      <responds-to command="snapshot">
+        <cocoa method="handleSnapshotScriptCommand:"/>
+      </responds-to>
 
       <element type="window" access="r">
         <cocoa key="scriptWindows"/>
@@ -214,6 +220,17 @@
 
     <command name="close window" code="GhstClWn" description="Close a window.">
       <direct-parameter type="specifier" description="The window to close."/>
+    </command>
+
+    <command name="snapshot" code="GhstSnap" description="Capture the full state of all windows, tabs, and split panes as JSON.">
+      <result type="text" description="JSON string describing the complete window/tab/split state."/>
+    </command>
+
+    <command name="restore session" code="GhstRsSn" description="Restore a complete session from a JSON file. Creates windows, tabs, and split panes as described in the file.">
+      <parameter name="from" code="GRsF" type="text" description="Path to the session JSON file.">
+        <cocoa key="filePath"/>
+      </parameter>
+      <result type="boolean" description="True when the session was restored successfully."/>
     </command>
 
     <command name="input text" code="GhstInTx" description="Input text to a terminal as if it was pasted.">

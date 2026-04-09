@@ -1768,6 +1768,12 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            // Session restore keys (decode-only)
+            case command
+            case initialInput
+            case environmentVariables
+            case fontSize
+            case waitAfterCommand
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1779,9 +1785,27 @@ extension Ghostty {
             }
 
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
+
+            // UUID is optional for session restore (new UUIDs generated when absent)
+            let uuid: UUID?
+            if let uuidString = try container.decodeIfPresent(String.self, forKey: .uuid) {
+                uuid = UUID(uuidString: uuidString)
+            } else {
+                uuid = nil
+            }
+
             var config = Ghostty.SurfaceConfiguration()
-            config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
+            config.workingDirectory = try container.decodeIfPresent(String.self, forKey: .pwd)
+
+            // Session restore fields
+            config.command = try container.decodeIfPresent(String.self, forKey: .command)
+            config.initialInput = try container.decodeIfPresent(String.self, forKey: .initialInput)
+            config.environmentVariables = try container.decodeIfPresent([String: String].self, forKey: .environmentVariables) ?? [:]
+            if let fontSize = try container.decodeIfPresent(Float32.self, forKey: .fontSize) {
+                config.fontSize = fontSize
+            }
+            config.waitAfterCommand = try container.decodeIfPresent(Bool.self, forKey: .waitAfterCommand) ?? false
+
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
 
