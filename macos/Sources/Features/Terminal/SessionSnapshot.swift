@@ -65,6 +65,11 @@ enum SessionSnapshotter {
             if let title = primary.window?.title {
                 windowDict["title"] = title
             }
+            // Record the yabai space so restore can place the window correctly
+            if let nsWindow = primary.window,
+               let space = YabaiHelper.space(for: nsWindow) {
+                windowDict["workspace"] = space
+            }
             windows.append(windowDict)
         }
 

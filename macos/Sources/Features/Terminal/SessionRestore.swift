@@ -22,6 +22,9 @@ struct SessionWindow: Decodable {
     let id: String
     let title: String?
     let tabs: [SessionTab]
+    /// Yabai space index recorded at snapshot time. Used to place the window
+    /// on the correct space when restoring.
+    let workspace: Int?
 }
 
 struct SessionTab: Decodable {
@@ -146,6 +149,14 @@ enum SessionRestorer {
                 // Window doesn't exist — create it with all tabs.
                 guard let firstTab = sessionWindow.tabs.first else { continue }
 
+                // Snapshot existing yabai IDs so we can identify the new window.
+                let ourPID = ProcessInfo.processInfo.processIdentifier
+                let existingYabaiIDs = Set(
+                    YabaiHelper.queryWindows()
+                        .filter { $0.pid == ourPID }
+                        .map(\.id)
+                )
+
                 let tree = SplitTree<Ghostty.SurfaceView>(
                     root: firstTab.surfaceTree.root,
                     zoomed: nil
@@ -165,12 +176,23 @@ enum SessionRestorer {
 
                 window.makeKeyAndOrderFront(nil)
 
+                // Place on the correct workspace if recorded.
+                if let targetSpace = sessionWindow.workspace {
+                    placeWindow(
+                        ourPID: ourPID,
+                        existingIDs: existingYabaiIDs,
+                        targetSpace: targetSpace,
+                        windowTitle: windowTitle
+                    )
+                }
+
                 let stableID = ScriptWindow.stableID(primaryController: controller)
                 windowMap[sessionWindow.id] = stableID
                 summary.windowsCreated += 1
 
+                let spaceNote = sessionWindow.workspace.map { " → space \($0)" } ?? ""
                 Ghostty.logger.info(
-                    "session restore: created window '\(windowTitle)' with \(sessionWindow.tabs.count) tab(s)"
+                    "session restore: created window '\(windowTitle)' with \(sessionWindow.tabs.count) tab(s)\(spaceNote)"
                 )
             }
         }
@@ -225,6 +247,32 @@ enum SessionRestorer {
         }
 
         return result
+    }
+
+    /// Find the newly created yabai window (not in existingIDs) and move it to targetSpace.
+    private static func placeWindow(
+        ourPID: Int32,
+        existingIDs: Set<Int>,
+        targetSpace: Int,
+        windowTitle: String
+    ) {
+        // Give the window manager a moment to register the new window.
+        Thread.sleep(forTimeInterval: 0.3)
+
+        let newWindows = YabaiHelper.queryWindows()
+            .filter { $0.pid == ourPID && !existingIDs.contains($0.id) }
+
+        guard let newWin = newWindows.max(by: { $0.id < $1.id }) else {
+            Ghostty.logger.warning("session restore: could not find new yabai window for '\(windowTitle)'")
+            return
+        }
+
+        if newWin.space != targetSpace {
+            let ok = YabaiHelper.moveWindow(id: newWin.id, toSpace: targetSpace)
+            Ghostty.logger.info(
+                "session restore: moved yabai window \(newWin.id) to space \(targetSpace) — \(ok ? "ok" : "failed")"
+            )
+        }
     }
 
     /// Add a single session tab to an existing window.
