@@ -104,6 +104,12 @@
                                     <action selector="reloadConfig:" target="bbz-4X-AYv" id="h5x-tu-Izk"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="Save Session" keyEquivalent="s" id="WRB-s0-v1e">
+                                <modifierMask key="keyEquivalentModifierMask" command="YES" shift="YES"/>
+                                <connections>
+                                    <action selector="saveSession:" target="bbz-4X-AYv" id="WRB-s0-v1f"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Restore from Latest Hive" id="WRB-h1-v3s">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

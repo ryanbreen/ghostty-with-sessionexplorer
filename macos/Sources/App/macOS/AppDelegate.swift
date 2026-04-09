@@ -954,6 +954,20 @@ class AppDelegate: NSObject,
         ghostty.reloadConfig()
     }
 
+    @IBAction func saveSession(_ sender: Any?) {
+        let json = SessionSnapshotter.snapshot()
+        do {
+            try SessionStorage.save(json: json)
+            Ghostty.logger.info("session saved to ~/.claude-pods/sessions/")
+        } catch {
+            Ghostty.logger.error("session save failed: \(error)")
+            let alert = NSAlert()
+            alert.messageText = "Save failed"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
     @IBAction func convertToPod(_ sender: Any?) {
         guard let controller = NSApp.keyWindow?.windowController as? BaseTerminalController else { return }
         PodConverter.convertFocusedToPod(controller: controller, ghostty: ghostty)
@@ -963,8 +977,8 @@ class AppDelegate: NSObject,
         let sessionPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude-pods/ghostty-session.json")
         guard FileManager.default.fileExists(atPath: sessionPath) else {
             let alert = NSAlert()
-            alert.messageText = "No Hive session found"
-            alert.informativeText = "Use Rebuild All in Hive to generate a session file first."
+            alert.messageText = "No session found"
+            alert.informativeText = "Use Save Session to create one first."
             alert.runModal()
             return
         }
