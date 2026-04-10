@@ -1,36 +1,35 @@
 import AppKit
 import GhosttyKit
 
-/// Converts the focused tab into a full pod layout: a 3-column, 5-pane split
-/// where every surface lands in the same working directory and AI agents
-/// are launched in the left column.
+/// Opens the focused tab as a full agent-layout tab: a 3-column, 5-pane split
+/// where every surface lands in the same working directory and AI agents are
+/// launched in the left column.
 ///
-/// Layout (matches Hive's standard pod):
 ///   claude (top-left)  |  middle  |  right-top
 ///   codex  (bot-left)  |          |  right-bottom
 ///
-/// The conversion adds a new tab with the pod layout, then closes the
-/// original single-pane tab so the user ends up with the expanded view.
+/// The action adds a new tab with the agent layout, then closes the original
+/// single-pane tab so the user ends up with the expanded view.
 
 @MainActor
-enum PodConverter {
+enum AgentLayout {
 
-    /// Expand the focused tab of `controller` into the standard pod layout.
+    /// Open the agent layout for the focused tab of `controller`.
     /// The directory is taken from the focused surface's pwd.
-    static func convertFocusedToPod(controller: BaseTerminalController, ghostty: Ghostty.App) {
+    static func openForFocused(controller: BaseTerminalController, ghostty: Ghostty.App) {
         guard let pwd = controller.focusedSurface?.pwd, !pwd.isEmpty else {
-            Ghostty.logger.warning("pod convert: no pwd available from focused surface")
+            Ghostty.logger.warning("agent layout: no pwd available from focused surface")
             return
         }
-        convert(directory: pwd, controller: controller, ghostty: ghostty)
+        open(directory: pwd, controller: controller, ghostty: ghostty)
     }
 
-    /// Expand into a pod layout using an explicit directory.
-    static func convert(directory: String, controller: BaseTerminalController, ghostty: Ghostty.App) {
+    /// Open the agent layout using an explicit directory.
+    static func open(directory: String, controller: BaseTerminalController, ghostty: Ghostty.App) {
         let dir = (directory as NSString).expandingTildeInPath
 
-        guard let tree = buildPodTree(directory: dir) else {
-            Ghostty.logger.error("pod convert: failed to build split tree for '\(dir)'")
+        guard let tree = buildLayoutTree(directory: dir) else {
+            Ghostty.logger.error("agent layout: failed to build split tree for '\(dir)'")
             return
         }
 
@@ -50,12 +49,12 @@ enum PodConverter {
             existingWindow.close()
         }
 
-        Ghostty.logger.info("pod convert: created pod tab '\(tabTitle)' at '\(dir)'")
+        Ghostty.logger.info("agent layout: created tab '\(tabTitle)' at '\(dir)'")
     }
 
-    // MARK: - Build the Pod Split Tree
+    // MARK: - Build the Layout Tree
 
-    /// Build a 5-pane pod layout as a SplitTree decoded from JSON.
+    /// Build a 5-pane agent layout as a SplitTree decoded from JSON.
     /// Using JSON as the construction path lets us reuse the exact same
     /// surface initialisation path as session restore.
     ///
@@ -63,7 +62,7 @@ enum PodConverter {
     ///   left-bottom (codex)         | middle (0.5) | right-top + right-bottom (0.5)
     ///                                                right-top (0.5)
     ///                                                right-bottom
-    private static func buildPodTree(directory: String) -> SplitTree<Ghostty.SurfaceView>? {
+    private static func buildLayoutTree(directory: String) -> SplitTree<Ghostty.SurfaceView>? {
         func surface(_ dir: String, command: String? = nil) -> [String: Any] {
             let shellEscaped = "'" + dir.replacingOccurrences(of: "'", with: "'\\''") + "'"
             var input = "cd -- \(shellEscaped)\n"

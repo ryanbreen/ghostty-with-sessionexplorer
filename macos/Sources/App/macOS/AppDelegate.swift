@@ -23,6 +23,8 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuCheckForUpdates: NSMenuItem?
     @IBOutlet private var menuOpenConfig: NSMenuItem?
     @IBOutlet private var menuReloadConfig: NSMenuItem?
+    @IBOutlet private var menuSaveSession: NSMenuItem?
+    @IBOutlet private var menuRestoreSession: NSMenuItem?
     @IBOutlet private var menuSecureInput: NSMenuItem?
     @IBOutlet private var menuQuit: NSMenuItem?
 
@@ -156,6 +158,10 @@ class AppDelegate: NSObject,
 
     @MainActor private lazy var menuShortcutManager = Ghostty.MenuShortcutManager()
 
+    /// Periodic timer that auto-saves the current session every 30 minutes.
+    private var autoSaveSessionTimer: Timer?
+    private static let autoSaveSessionInterval: TimeInterval = 30 * 60
+
     override init() {
 #if DEBUG
         ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"])
@@ -215,6 +221,18 @@ class AppDelegate: NSObject,
 
         // Start our update checker.
         updateController.startUpdater()
+
+        // Schedule periodic session auto-save. Each tick writes a fresh
+        // timestamped snapshot and updates the latest-session pointer so
+        // Restore Session always picks up the most recent layout.
+        autoSaveSessionTimer = Timer.scheduledTimer(
+            timeInterval: AppDelegate.autoSaveSessionInterval,
+            target: self,
+            selector: #selector(autoSaveSessionTick),
+            userInfo: nil,
+            repeats: true
+        )
+        Ghostty.logger.info("session auto-save scheduled every \(Int(AppDelegate.autoSaveSessionInterval / 60)) min")
 
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
@@ -955,10 +973,8 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func saveSession(_ sender: Any?) {
-        let json = SessionSnapshotter.snapshot()
         do {
-            try SessionStorage.save(json: json)
-            Ghostty.logger.info("session saved to ~/.claude-pods/sessions/")
+            try writeSessionSnapshot(reason: "manual")
         } catch {
             Ghostty.logger.error("session save failed: \(error)")
             let alert = NSAlert()
@@ -968,13 +984,13 @@ class AppDelegate: NSObject,
         }
     }
 
-    @IBAction func convertToPod(_ sender: Any?) {
+    @IBAction func openAgentLayout(_ sender: Any?) {
         guard let controller = NSApp.keyWindow?.windowController as? BaseTerminalController else { return }
-        PodConverter.convertFocusedToPod(controller: controller, ghostty: ghostty)
+        AgentLayout.openForFocused(controller: controller, ghostty: ghostty)
     }
 
-    @IBAction func restoreFromLatestHive(_ sender: Any?) {
-        let sessionPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude-pods/ghostty-session.json")
+    @IBAction func restoreSession(_ sender: Any?) {
+        let sessionPath = SessionStorage.symlinkPath.path
         guard FileManager.default.fileExists(atPath: sessionPath) else {
             let alert = NSAlert()
             alert.messageText = "No session found"
@@ -985,11 +1001,31 @@ class AppDelegate: NSObject,
         do {
             _ = try SessionRestorer.restore(from: sessionPath, ghostty: ghostty)
         } catch {
-            Ghostty.logger.error("hive session restore failed: \(error)")
+            Ghostty.logger.error("session restore failed: \(error)")
             let alert = NSAlert()
             alert.messageText = "Restore failed"
             alert.informativeText = error.localizedDescription
             alert.runModal()
+        }
+    }
+
+    /// Snapshot the current session and persist it via SessionStorage.
+    /// Used by both the manual Save Session action and the periodic auto-save timer.
+    @discardableResult
+    private func writeSessionSnapshot(reason: String) throws -> URL {
+        let json = SessionSnapshotter.snapshot()
+        let url = try SessionStorage.save(json: json)
+        Ghostty.logger.info("session saved (\(reason)) → \(url.path)")
+        return url
+    }
+
+    /// Auto-save the session on a fixed cadence so we always have a recent snapshot
+    /// to restore from after a crash or unexpected quit.
+    @objc private func autoSaveSessionTick() {
+        do {
+            try writeSessionSnapshot(reason: "auto")
+        } catch {
+            Ghostty.logger.error("session auto-save failed: \(error)")
         }
     }
 
@@ -1152,6 +1188,8 @@ extension AppDelegate {
         self.menuCheckForUpdates?.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
         self.menuOpenConfig?.setImageIfDesired(systemSymbolName: "gear")
         self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
+        self.menuSaveSession?.setImageIfDesired(systemSymbolName: "tray.and.arrow.down.fill")
+        self.menuRestoreSession?.setImageIfDesired(systemSymbolName: "tray.and.arrow.up.fill")
         self.menuSecureInput?.setImageIfDesired(systemSymbolName: "lock.display")
         self.menuNewWindow?.setImageIfDesired(systemSymbolName: "macwindow.badge.plus")
         self.menuNewTab?.setImageIfDesired(systemSymbolName: "macwindow")

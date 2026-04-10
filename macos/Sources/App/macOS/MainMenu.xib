@@ -51,7 +51,9 @@
                 <outlet property="menuRedo" destination="EX8-lB-4s7" id="wON-2J-yT1"/>
                 <outlet property="menuReloadConfig" destination="KKH-XX-5py" id="Wvp-7J-wqX"/>
                 <outlet property="menuResetFontSize" destination="Jah-MY-aLX" id="ger-qM-wrm"/>
+                <outlet property="menuRestoreSession" destination="WRB-h1-v3s" id="WRB-h1-out"/>
                 <outlet property="menuReturnToDefaultSize" destination="Gbx-Vi-OGC" id="po9-qC-Iz6"/>
+                <outlet property="menuSaveSession" destination="WRB-s0-v1e" id="WRB-s0-out"/>
                 <outlet property="menuSecureInput" destination="oC6-w4-qI7" id="PCc-pe-Mda"/>
                 <outlet property="menuSelectAll" destination="q2h-lq-e4r" id="s98-r1-Jcv"/>
                 <outlet property="menuSelectSplitAbove" destination="0yU-hC-8xF" id="aPc-lS-own"/>
@@ -110,16 +112,16 @@
                                     <action selector="saveSession:" target="bbz-4X-AYv" id="WRB-s0-v1f"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Restore from Latest Hive" id="WRB-h1-v3s">
+                            <menuItem title="Restore Session" id="WRB-h1-v3s">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
-                                    <action selector="restoreFromLatestHive:" target="bbz-4X-AYv" id="WRB-h1-v3t"/>
+                                    <action selector="restoreSession:" target="bbz-4X-AYv" id="WRB-h1-v3t"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Convert to Pod" keyEquivalent="p" id="WRB-p0-d1r">
+                            <menuItem title="Open Agent Layout" keyEquivalent="p" id="WRB-p0-d1r">
                                 <modifierMask key="keyEquivalentModifierMask" command="YES" shift="YES"/>
                                 <connections>
-                                    <action selector="convertToPod:" target="bbz-4X-AYv" id="WRB-p0-d1s"/>
+                                    <action selector="openAgentLayout:" target="bbz-4X-AYv" id="WRB-p0-d1s"/>
                                 </connections>
                             </menuItem>
                             <menuItem title="Secure Keyboard Entry" id="oC6-w4-qI7">
