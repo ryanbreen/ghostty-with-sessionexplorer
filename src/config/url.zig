@@ -91,12 +91,14 @@ const rooted_or_relative_path_branch =
     dotted_path_lookahead ++
     path_chars ++ "+" ++
     dotted_path_space_segments ++
+    no_trailing_punctuation ++
     no_trailing_colon ++
     trailing_spaces_at_eol ++
     "|" ++
     non_dotted_path_lookahead ++
     path_chars ++ "+" ++
     any_path_space_segments ++
+    no_trailing_punctuation ++
     no_trailing_colon ++
     trailing_spaces_at_eol ++
     ")";
@@ -110,6 +112,7 @@ const bare_relative_path_branch =
     dotted_path_lookahead ++
     bare_relative_path_prefix ++
     path_chars ++ "+" ++
+    no_trailing_punctuation ++
     no_trailing_colon ++
     trailing_spaces_at_eol;
 
@@ -344,7 +347,7 @@ test "url regex" {
         // File paths with spaces
         .{
             .input = "./spaces-end.   ",
-            .expect = "./spaces-end.   ",
+            .expect = "./spaces-end",
         },
         .{
             .input = "./space middle",
@@ -479,6 +482,19 @@ test "url regex" {
         .{
             .input = "./Downloads: Operation not permitted",
             .expect = "./Downloads",
+        },
+        // trailing period/comma should not be part of file paths
+        .{
+            .input = "~/fun/code/ghostty/zig-out/Ghostty.app.",
+            .expect = "~/fun/code/ghostty/zig-out/Ghostty.app",
+        },
+        .{
+            .input = "see /tmp/output.txt, then continue",
+            .expect = "/tmp/output.txt",
+        },
+        .{
+            .input = "built src/config/url.zig.",
+            .expect = "src/config/url.zig",
         },
     };
 
