@@ -620,7 +620,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$CONFIGURATION\" = \"ReleaseLocal\" ]; then\n    DEST=\"/Applications/Ghostty WRB.app\"\n    rm -rf \"$DEST\"\n    ditto \"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\" \"$DEST\"\n    /usr/libexec/PlistBuddy -c \"Set :CFBundleName Ghostty WRB\" \"$DEST/Contents/Info.plist\"\n    /usr/libexec/PlistBuddy -c \"Set :CFBundleDisplayName Ghostty WRB\" \"$DEST/Contents/Info.plist\"\n    /usr/libexec/PlistBuddy -c \"Set :CFBundleIdentifier com.mitchellh.ghostty.wrb\" \"$DEST/Contents/Info.plist\"\n    codesign --force --deep --sign - \"$DEST\"\nfi\n";
+			shellScript = "if [ \"$CONFIGURATION\" = \"ReleaseLocal\" ]; then\n    DEST=\"/Applications/$FULL_PRODUCT_NAME\"\n    rm -rf \"$DEST\"\n    ditto \"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\" \"$DEST\"\n    codesign --force --deep --sign - \"$DEST\"\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 		FC501E0B2F46B410007AE49D /* Run SwiftLint */ = {

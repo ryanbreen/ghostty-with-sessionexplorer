@@ -1,40 +1,57 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SessionExplorerView: View {
     @StateObject private var store = SessionStore()
-    @State private var selectedSession: SessionStore.StoredSession?
+    @StateObject private var templateStore = TemplateStore()
+    @State private var selection: SessionExplorerSelection?
     @State private var diff: SessionDiff?
     @State private var liveState: ExplorerSnapshot?
     @State private var liveRefreshTask: Task<Void, Never>?
+    @State private var importJSONString = ""
+    @State private var isPresentingImportJSONSheet = false
+    @State private var errorMessage: String?
 
     let refreshLiveState: (() async -> ExplorerSnapshot?)?
     let computeDiff: ((SessionStore.StoredSession, ExplorerSnapshot?) -> SessionDiff?)?
     let onSnapshotCurrent: (() -> Void)?
-    let onAssertAll: ((SessionStore.StoredSession) -> Void)?
-    let onAssertWindow: ((SessionStore.StoredSession, WindowDiff) -> Void)?
+    let onAssertSnapshot: ((ExplorerSnapshot) -> Void)?
+    let onAssertWindow: ((ExplorerWindow) -> Void)?
+    let onAssertTemplate: ((SessionTemplate) -> Void)?
 
     init(
         refreshLiveState: (() async -> ExplorerSnapshot?)? = nil,
         computeDiff: ((SessionStore.StoredSession, ExplorerSnapshot?) -> SessionDiff?)? = nil,
         onSnapshotCurrent: (() -> Void)? = nil,
-        onAssertAll: ((SessionStore.StoredSession) -> Void)? = nil,
-        onAssertWindow: ((SessionStore.StoredSession, WindowDiff) -> Void)? = nil
+        onAssertSnapshot: ((ExplorerSnapshot) -> Void)? = nil,
+        onAssertWindow: ((ExplorerWindow) -> Void)? = nil,
+        onAssertTemplate: ((SessionTemplate) -> Void)? = nil
     ) {
         self.refreshLiveState = refreshLiveState
         self.computeDiff = computeDiff
         self.onSnapshotCurrent = onSnapshotCurrent
-        self.onAssertAll = onAssertAll
+        self.onAssertSnapshot = onAssertSnapshot
         self.onAssertWindow = onAssertWindow
+        self.onAssertTemplate = onAssertTemplate
     }
 
     var body: some View {
         HSplitView {
             SessionSidebarView(
                 store: store,
-                selected: $selectedSession,
-                onSnapshotCurrent: onSnapshotCurrent
+                templateStore: templateStore,
+                selection: $selection,
+                onSnapshotCurrent: onSnapshotCurrent,
+                onDeleteSnapshot: deleteSnapshot,
+                onDeleteTemplate: deleteTemplate,
+                onImportTemplateFile: importTemplateFromFile,
+                onPasteTemplateJSON: {
+                    importJSONString = ""
+                    isPresentingImportJSONSheet = true
+                }
             )
-            .frame(minWidth: 250, idealWidth: 250, maxWidth: 250)
+            .frame(minWidth: 290, idealWidth: 290, maxWidth: 290)
             .background(Color.explorerSurface2)
             .overlay(alignment: .trailing) {
                 Rectangle()
@@ -43,13 +60,21 @@ struct SessionExplorerView: View {
             }
 
             SessionMainPanelView(
-                session: selectedSession,
+                snapshot: selectedSnapshot,
+                template: selectedTemplate,
                 diff: diff,
-                onAssertAll: onAssertAll,
-                onAssertWindow: onAssertWindow
+                onAssertSnapshot: onAssertSnapshot,
+                onAssertWindow: onAssertWindow,
+                onSaveSnapshot: saveSnapshot,
+                onPromoteSnapshot: promoteSnapshot,
+                onSaveTemplate: saveTemplate,
+                onAssertTemplate: onAssertTemplate,
+                onDuplicateTemplate: duplicateTemplate,
+                onCopyTemplateJSON: copyTemplateJSON,
+                onExportTemplate: exportTemplate
             )
         }
-        .frame(minWidth: 1020, minHeight: 700)
+        .frame(minWidth: 1180, minHeight: 760)
         .background(Color.explorerSurface1)
         .preferredColorScheme(.dark)
         .task {
@@ -59,40 +84,98 @@ struct SessionExplorerView: View {
             liveRefreshTask?.cancel()
             liveRefreshTask = nil
         }
-        // ASSUMES: `StoredSession` exposes a stable `id` used for selection refresh.
-        .onChange(of: selectedSession?.id) { _ in
+        .onChange(of: selection) { _ in
             refreshDiff()
         }
-        .onChange(of: store.sessions.count) { _ in
-            if selectedSession == nil {
-                selectedSession = sortedSessions.first
-            }
+        .onChange(of: store.sessions.map(\.id)) { _ in
+            maintainSelection()
             refreshDiff()
+        }
+        .onChange(of: templateStore.templates.map(\.id)) { _ in
+            maintainSelection()
+        }
+        .sheet(isPresented: $isPresentingImportJSONSheet) {
+            ImportTemplateJSONSheet(
+                json: $importJSONString,
+                onCancel: {
+                    isPresentingImportJSONSheet = false
+                },
+                onImport: {
+                    importTemplateFromJSON()
+                }
+            )
+            .frame(width: 640, height: 420)
+            .padding(20)
+        }
+        .alert(
+            "Session Explorer Error",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        errorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
         }
     }
 
-    private var sortedSessions: [SessionStore.StoredSession] {
-        // ASSUMES: `StoredSession.date` is a `Date`.
-        store.sessions.sorted { $0.date > $1.date }
+    private var selectedSnapshot: SessionStore.StoredSession? {
+        guard case .snapshot(let id) = selection else { return nil }
+        return store.sessions.first(where: { $0.id == id })
+    }
+
+    private var selectedTemplate: TemplateStore.StoredTemplate? {
+        guard case .template(let id) = selection else { return nil }
+        return templateStore.templates.first(where: { $0.id == id })
     }
 
     @MainActor
     private func handleInitialLoad() async {
         store.loadSessions()
-        if selectedSession == nil {
-            selectedSession = sortedSessions.first
-        }
+        templateStore.loadTemplates()
+        maintainSelection()
         refreshDiff()
         startLiveRefreshLoop()
     }
 
     @MainActor
-    private func refreshDiff() {
-        guard let selectedSession, let computeDiff else {
-            diff = nil
-            return
+    private func maintainSelection() {
+        switch selection {
+        case .template(let id):
+            if templateStore.templates.contains(where: { $0.id == id }) {
+                return
+            }
+        case .snapshot(let id):
+            if store.sessions.contains(where: { $0.id == id }) {
+                return
+            }
+        case nil:
+            break
         }
-        diff = computeDiff(selectedSession, liveState)
+
+        if let template = templateStore.templates.first {
+            selection = .template(template.id)
+        } else if let snapshot = store.sessions.first {
+            selection = .snapshot(snapshot.id)
+        } else {
+            selection = nil
+        }
+    }
+
+    @MainActor
+    private func refreshDiff() {
+        if let selectedSnapshot, let computeDiff {
+            diff = computeDiff(selectedSnapshot, liveState)
+        } else if let selectedTemplate, let liveState {
+            diff = SessionDiff.diff(session: selectedTemplate.template.asSnapshot, live: liveState)
+        } else {
+            diff = nil
+        }
     }
 
     @MainActor
@@ -115,6 +198,344 @@ struct SessionExplorerView: View {
             liveState = snapshot
             refreshDiff()
         }
+    }
+
+    private func deleteSnapshot(_ session: SessionStore.StoredSession) {
+        do {
+            try store.delete(session: session)
+        } catch {
+            errorMessage = "Failed to delete snapshot: \(error.localizedDescription)"
+        }
+    }
+
+    private func deleteTemplate(_ template: TemplateStore.StoredTemplate) {
+        do {
+            try templateStore.delete(template: template)
+        } catch {
+            errorMessage = "Failed to delete template: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveSnapshot(_ session: SessionStore.StoredSession, snapshot: ExplorerSnapshot) {
+        do {
+            try store.updateSnapshot(session: session, snapshot: snapshot)
+        } catch {
+            errorMessage = "Failed to save snapshot edits: \(error.localizedDescription)"
+        }
+    }
+
+    private func promoteSnapshot(_ snapshot: ExplorerSnapshot, name: String) {
+        do {
+            let stored = try templateStore.save(
+                template: SessionTemplate.promote(snapshot: snapshot, name: name)
+            )
+            selection = .template(stored.id)
+        } catch {
+            errorMessage = "Failed to save template: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveTemplate(_ template: SessionTemplate) {
+        do {
+            _ = try templateStore.silentSave(template: template)
+        } catch {
+            errorMessage = "Failed to save template edits: \(error.localizedDescription)"
+        }
+    }
+
+    private func duplicateTemplate(_ template: TemplateStore.StoredTemplate) {
+        do {
+            let duplicated = try templateStore.duplicate(template: template)
+            selection = .template(duplicated.id)
+        } catch {
+            errorMessage = "Failed to duplicate template: \(error.localizedDescription)"
+        }
+    }
+
+    private func copyTemplateJSON(_ template: TemplateStore.StoredTemplate) {
+        do {
+            let data = try TemplateStore.jsonEncoder.encode(template.template)
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(json, forType: .string)
+        } catch {
+            errorMessage = "Failed to copy template JSON: \(error.localizedDescription)"
+        }
+    }
+
+    private func exportTemplate(_ template: TemplateStore.StoredTemplate) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.json]
+        panel.nameFieldStringValue = "\(template.name).json"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let data = try TemplateStore.jsonEncoder.encode(template.template)
+            try data.write(to: url, options: [.atomic])
+        } catch {
+            errorMessage = "Failed to export template: \(error.localizedDescription)"
+        }
+    }
+
+    private func importTemplateFromFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType.json]
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let template = try TemplateStore.jsonDecoder.decode(SessionTemplate.self, from: data)
+            let stored = try templateStore.save(template: template)
+            selection = .template(stored.id)
+        } catch {
+            errorMessage = "Failed to import template: \(error.localizedDescription)"
+        }
+    }
+
+    private func importTemplateFromJSON() {
+        do {
+            guard let data = importJSONString.data(using: .utf8) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            let template = try TemplateStore.jsonDecoder.decode(SessionTemplate.self, from: data)
+            let stored = try templateStore.save(template: template)
+            selection = .template(stored.id)
+            isPresentingImportJSONSheet = false
+        } catch {
+            errorMessage = "Failed to import pasted template JSON: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct ImportTemplateJSONSheet: View {
+    @Binding var json: String
+    let onCancel: () -> Void
+    let onImport: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Paste Template JSON")
+                .font(.system(size: 18, weight: .semibold))
+
+            TextEditor(text: $json)
+                .font(.system(size: 12, design: .monospaced))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.explorerBorder, lineWidth: 1)
+                }
+
+            HStack {
+                Spacer()
+
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerMuted))
+
+                Button("Import", action: onImport)
+                    .buttonStyle(SessionExplorerFilledButtonStyle(fill: .explorerAccent))
+                    .disabled(json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(8)
+        .background(Color.explorerSurface1)
+    }
+}
+
+struct SessionExplorerCommitTextField: NSViewRepresentable {
+    let placeholder: String
+    let text: String
+    let font: NSFont
+    let onCommit: (String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: text, onCommit: onCommit)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: "")
+        field.placeholderString = placeholder
+        field.delegate = context.coordinator
+        field.font = font
+        field.focusRingType = .default
+        field.backgroundColor = NSColor(Color.explorerSurface1)
+        field.textColor = NSColor(Color.explorerText)
+        field.isAutomaticTextCompletionEnabled = false
+        field.usesSingleLineMode = true
+        context.coordinator.applyModelText(text, to: field, force: true)
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        field.placeholderString = placeholder
+        field.font = font
+        field.backgroundColor = NSColor(Color.explorerSurface1)
+        field.textColor = NSColor(Color.explorerText)
+        context.coordinator.applyModelText(text, to: field, force: false)
+    }
+
+    static func dismantleNSView(_ field: NSTextField, coordinator: Coordinator) {
+        coordinator.commitIfNeeded(from: field)
+        field.delegate = nil
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private var modelText: String
+        private var onCommit: (String) -> Void
+        private var isEditing = false
+
+        init(text: String, onCommit: @escaping (String) -> Void) {
+            self.modelText = text
+            self.onCommit = onCommit
+        }
+
+        func applyModelText(_ text: String, to field: NSTextField, force: Bool) {
+            guard force || !isEditing else { return }
+            modelText = text
+            if field.stringValue != text {
+                field.stringValue = text
+            }
+        }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            isEditing = true
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            isEditing = false
+            guard let field = obj.object as? NSTextField else { return }
+            commitIfNeeded(from: field)
+        }
+
+        func commitIfNeeded(from field: NSTextField) {
+            let currentText = field.stringValue
+            guard currentText != modelText else { return }
+            modelText = currentText
+            onCommit(currentText)
+        }
+    }
+}
+
+struct SessionExplorerCommitTextEditor: NSViewRepresentable {
+    let text: String
+    let font: NSFont
+    let onCommit: (String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: text, onCommit: onCommit)
+    }
+
+    func makeNSView(context: Context) -> SessionExplorerTextEditorScrollView {
+        let scrollView = SessionExplorerTextEditorScrollView()
+        scrollView.textView.delegate = context.coordinator
+        scrollView.textView.font = font
+        context.coordinator.applyModelText(text, to: scrollView.textView, force: true)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: SessionExplorerTextEditorScrollView, context: Context) {
+        scrollView.textView.font = font
+        context.coordinator.applyModelText(text, to: scrollView.textView, force: false)
+    }
+
+    static func dismantleNSView(
+        _ scrollView: SessionExplorerTextEditorScrollView,
+        coordinator: Coordinator
+    ) {
+        coordinator.commitIfNeeded(from: scrollView.textView)
+        scrollView.textView.delegate = nil
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        private var modelText: String
+        private var onCommit: (String) -> Void
+        private var isEditing = false
+
+        init(text: String, onCommit: @escaping (String) -> Void) {
+            self.modelText = text
+            self.onCommit = onCommit
+        }
+
+        func applyModelText(_ text: String, to textView: NSTextView, force: Bool) {
+            guard force || !isEditing else { return }
+            modelText = text
+            if textView.string != text {
+                textView.string = text
+            }
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            isEditing = true
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            isEditing = false
+            guard let textView = notification.object as? NSTextView else { return }
+            commitIfNeeded(from: textView)
+        }
+
+        func commitIfNeeded(from textView: NSTextView) {
+            let currentText = textView.string
+            guard currentText != modelText else { return }
+            modelText = currentText
+            onCommit(currentText)
+        }
+    }
+}
+
+final class SessionExplorerTextEditorScrollView: NSScrollView {
+    let textView: NSTextView
+
+    init() {
+        let contentSize = NSSize(width: 0, height: 0)
+        let textContainer = NSTextContainer(containerSize: NSSize(width: contentSize.width, height: .greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+
+        let layoutManager = NSLayoutManager()
+        layoutManager.addTextContainer(textContainer)
+
+        let textStorage = NSTextStorage()
+        textStorage.addLayoutManager(layoutManager)
+
+        textView = NSTextView(frame: .zero, textContainer: textContainer)
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.allowsUndo = true
+        textView.drawsBackground = true
+        textView.backgroundColor = NSColor(Color.explorerSurface1)
+        textView.textColor = NSColor(Color.explorerText)
+        textView.textContainerInset = NSSize(width: 6, height: 8)
+        textView.autoresizingMask = [.width]
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+
+        super.init(frame: .zero)
+
+        borderType = .noBorder
+        drawsBackground = true
+        backgroundColor = NSColor(Color.explorerSurface1)
+        hasVerticalScroller = true
+        hasHorizontalScroller = false
+        autohidesScrollers = true
+        documentView = textView
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 
@@ -286,7 +707,6 @@ struct SessionExplorerStatusPresentation {
 }
 
 func sessionExplorerStatusPresentation(for status: DiffStatus) -> SessionExplorerStatusPresentation {
-    // ASSUMES: `DiffStatus` contains `.match`, `.missing`, and `.partial`.
     switch status {
     case .match:
         SessionExplorerStatusPresentation(label: "Match", color: .explorerMatch)

@@ -58,41 +58,42 @@ final class SessionExplorerWindowController: NSWindowController, NSWindowDelegat
                     let diff = SessionDiff.diff(session: session.snapshot, live: live)
                     explorerDebugLog(
                         "computeDiff completed: session_id=\(session.id) windows=\(diff.windows.count) missing=\(diff.missingCount) partial=\(diff.partialCount) match=\(diff.matchCount)"
-                    )
+                        )
                     return diff
                 },
                 onSnapshotCurrent: { [weak assertController] in
                     explorerDebugLog("onSnapshotCurrent invoked")
                     assertController?.snapshotCurrent()
                 },
-                onAssertAll: { [weak assertController] session in
+                onAssertSnapshot: { [weak assertController] snapshot in
                     explorerDebugLog(
-                        "onAssertAll closure fired: session_id=\(session.id) windows=\(session.snapshot.windows.count)"
+                        "onAssertSnapshot closure fired: windows=\(snapshot.windows.count)"
                     )
                     guard let ac = assertController else {
-                        explorerDebugLog("onAssertAll aborted: assertController released")
+                        explorerDebugLog("onAssertSnapshot aborted: assertController released")
                         return
                     }
-                    Task { @MainActor in await ac.assertAll(session.snapshot) }
+                    Task { @MainActor in await ac.assertAll(snapshot) }
                 },
-                onAssertWindow: { [weak assertController] session, windowDiff in
+                onAssertWindow: { [weak assertController] window in
                     explorerDebugLog(
-                        "onAssertWindow closure fired: session_id=\(session.id) diff_id=\(windowDiff.id) title=\(windowDiff.title) status=\(String(describing: windowDiff.status))"
+                        "onAssertWindow closure fired: window_id=\(window.id) title=\(window.displayTitle)"
                     )
                     guard let ac = assertController else {
                         explorerDebugLog("onAssertWindow aborted: assertController released")
                         return
                     }
-                    if let window = session.snapshot.windows.first(where: { $0.id == windowDiff.id }) {
-                        explorerDebugLog(
-                            "onAssertWindow matched snapshot window: window_id=\(window.id) tabs=\(window.tabs.count)"
-                        )
-                        Task { @MainActor in await ac.assertWindow(window) }
-                    } else {
-                        explorerDebugLog(
-                            "onAssertWindow could not match diff to snapshot window: diff_id=\(windowDiff.id)"
-                        )
+                    Task { @MainActor in await ac.assertWindow(window) }
+                },
+                onAssertTemplate: { [weak assertController] template in
+                    explorerDebugLog(
+                        "onAssertTemplate closure fired: template_id=\(template.id) windows=\(template.windows.count)"
+                    )
+                    guard let ac = assertController else {
+                        explorerDebugLog("onAssertTemplate aborted: assertController released")
+                        return
                     }
+                    Task { @MainActor in await ac.assertTemplate(template) }
                 }
             )
         )
@@ -117,18 +118,50 @@ final class SessionExplorerWindowController: NSWindowController, NSWindowDelegat
     }
 }
 
-/// Custom window that intercepts Cmd+W before Ghostty's local event monitor
-/// can consume it for terminal close_tab. Non-terminal windows need standard
-/// AppKit close behavior.
+/// Custom window that intercepts standard keyboard shortcuts before Ghostty's
+/// terminal-oriented event handlers can eat them. Non-terminal windows need
+/// standard AppKit text editing behavior (paste, copy, cut, undo, select-all).
 final class SessionExplorerWindow: NSWindow {
+    /// Standard edit actions that text fields and text views handle natively.
+    /// We forward these to the first responder before the menu system or
+    /// Ghostty's local event monitor can consume them.
+    private static let editShortcuts: Set<String> = ["v", "c", "x", "a", "z"]
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command),
-           !event.modifierFlags.contains(.shift),
-           !event.modifierFlags.contains(.option),
-           event.charactersIgnoringModifiers == "w" {
+        guard event.modifierFlags.contains(.command),
+              !event.modifierFlags.contains(.option),
+              let chars = event.charactersIgnoringModifiers else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        // ⌘W → close window
+        if chars == "w" && !event.modifierFlags.contains(.shift) {
             close()
             return true
         }
+
+        // ⌘V/C/X/A/Z (and ⇧⌘Z for redo) → forward to first responder so
+        // NSTextField / NSTextView handle paste, copy, cut, select-all, undo
+        // before Ghostty's terminal paste action steals the event.
+        if Self.editShortcuts.contains(chars) {
+            if let responder = firstResponder {
+                let action: Selector = switch chars {
+                case "v": #selector(NSText.paste(_:))
+                case "c": #selector(NSText.copy(_:))
+                case "x": #selector(NSText.cut(_:))
+                case "a": #selector(NSText.selectAll(_:))
+                case "z": event.modifierFlags.contains(.shift)
+                    ? #selector(UndoManager.redo)
+                    : #selector(UndoManager.undo)
+                default: #selector(NSText.paste(_:))
+                }
+                if responder.responds(to: action) {
+                    responder.doCommand(by: action)
+                    return true
+                }
+            }
+        }
+
         return super.performKeyEquivalent(with: event)
     }
 }

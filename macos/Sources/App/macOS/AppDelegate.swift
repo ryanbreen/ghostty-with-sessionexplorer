@@ -607,6 +607,17 @@ class AppDelegate: NSObject,
         // because we let it capture and propagate.
         guard NSApp.mainWindow == nil else { return event }
 
+        // If the key window is a non-terminal window (e.g. Session Explorer),
+        // let the event pass through to AppKit's responder chain so text fields
+        // and other controls receive keystrokes normally. Without this guard,
+        // Ghostty's key binding handler below eats letters that happen to match
+        // terminal bindings, causing "randomly eaten keystrokes" in SwiftUI
+        // TextFields hosted in non-terminal windows.
+        if let keyWindow = NSApp.keyWindow,
+           !(keyWindow.windowController is BaseTerminalController) {
+            return event
+        }
+
         // If this event as-is would result in a key binding then we send it.
         if let app = ghostty.app {
             var ghosttyEvent = event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)

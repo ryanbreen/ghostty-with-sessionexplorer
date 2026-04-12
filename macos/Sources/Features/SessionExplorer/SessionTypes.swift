@@ -1,8 +1,8 @@
 import Foundation
 
-struct ExplorerSnapshot: Codable {
-    let version: Int
-    let windows: [ExplorerWindow]
+struct ExplorerSnapshot: Codable, Equatable {
+    var version: Int
+    var windows: [ExplorerWindow]
 
     static let currentVersion = 1
 
@@ -83,11 +83,11 @@ struct ExplorerSnapshot: Codable {
     }
 }
 
-struct ExplorerWindow: Codable, Identifiable {
-    let id: String
-    let title: String?
-    let workspace: Int?
-    let tabs: [ExplorerTab]
+struct ExplorerWindow: Codable, Identifiable, Equatable {
+    var id: String
+    var title: String?
+    var workspace: Int?
+    var tabs: [ExplorerTab]
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -147,9 +147,9 @@ struct ExplorerWindow: Codable, Identifiable {
     }
 }
 
-struct ExplorerTab: Codable {
-    let title: String?
-    let surfaceTree: ExplorerSurfaceTree
+struct ExplorerTab: Codable, Equatable {
+    var title: String?
+    var surfaceTree: ExplorerSurfaceTree
 
     init(title: String? = nil, surfaceTree: ExplorerSurfaceTree) {
         self.title = title
@@ -157,15 +157,15 @@ struct ExplorerTab: Codable {
     }
 }
 
-struct ExplorerSurfaceTree: Codable {
-    let root: ExplorerSurfaceNode
+struct ExplorerSurfaceTree: Codable, Equatable {
+    var root: ExplorerSurfaceNode
 
     init(root: ExplorerSurfaceNode) {
         self.root = root
     }
 }
 
-indirect enum ExplorerSurfaceNode: Codable {
+indirect enum ExplorerSurfaceNode: Codable, Equatable {
     case view(ExplorerSurfaceView)
     case split(ExplorerSurfaceSplit)
 
@@ -205,19 +205,25 @@ indirect enum ExplorerSurfaceNode: Codable {
     }
 }
 
-struct ExplorerSurfaceView: Codable {
-    let id: String?
-    let pwd: String?
-    let title: String?
-    let foregroundPid: Int?
-    let foregroundProcess: String?
-    let processExited: Bool?
-    /// Optional shell input that should be piped into the surface on startup
-    /// (e.g. `"claude --resume <id>\n"`). Preserved through load/assert/restore
-    /// so manual edits to saved snapshots survive the round-trip.
-    let initialInput: String?
-    /// Optional explicit command to launch instead of the user's default shell.
-    let command: String?
+struct ExplorerSurfaceView: Codable, Equatable {
+    var id: String?
+    var pwd: String?
+    var title: String?
+    var foregroundPid: Int?
+    var foregroundProcess: String?
+    var processExited: Bool?
+    var command: TemplateCommand?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case pwd
+        case title
+        case foregroundPid
+        case foregroundProcess
+        case processExited
+        case command
+        case initialInput
+    }
 
     init(
         id: String? = nil,
@@ -226,8 +232,7 @@ struct ExplorerSurfaceView: Codable {
         foregroundPid: Int? = nil,
         foregroundProcess: String? = nil,
         processExited: Bool? = nil,
-        initialInput: String? = nil,
-        command: String? = nil
+        command: TemplateCommand? = nil
     ) {
         self.id = id
         self.pwd = pwd
@@ -235,16 +240,46 @@ struct ExplorerSurfaceView: Codable {
         self.foregroundPid = foregroundPid
         self.foregroundProcess = foregroundProcess
         self.processExited = processExited
-        self.initialInput = initialInput
         self.command = command
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+        pwd = try container.decodeIfPresent(String.self, forKey: .pwd)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        foregroundPid = try container.decodeIfPresent(Int.self, forKey: .foregroundPid)
+        foregroundProcess = try container.decodeIfPresent(String.self, forKey: .foregroundProcess)
+        processExited = try container.decodeIfPresent(Bool.self, forKey: .processExited)
+
+        if let decodedCommand = try? container.decode(TemplateCommand.self, forKey: .command) {
+            command = decodedCommand
+        } else if let legacyCommand = try container.decodeIfPresent(String.self, forKey: .command) {
+            command = TemplateCommand.literal(fromCommands: [legacyCommand])
+        } else if let initialInput = try container.decodeIfPresent(String.self, forKey: .initialInput) {
+            command = TemplateCommand.literal(fromLegacyInitialInput: initialInput)
+        } else {
+            command = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encodeIfPresent(pwd, forKey: .pwd)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(foregroundPid, forKey: .foregroundPid)
+        try container.encodeIfPresent(foregroundProcess, forKey: .foregroundProcess)
+        try container.encodeIfPresent(processExited, forKey: .processExited)
+        try container.encodeIfPresent(command, forKey: .command)
     }
 }
 
-struct ExplorerSurfaceSplit: Codable {
-    let direction: String
-    let ratio: Double
-    let left: ExplorerSurfaceNode
-    let right: ExplorerSurfaceNode
+struct ExplorerSurfaceSplit: Codable, Equatable {
+    var direction: String
+    var ratio: Double
+    var left: ExplorerSurfaceNode
+    var right: ExplorerSurfaceNode
 
     private enum CodingKeys: String, CodingKey {
         case direction
@@ -354,7 +389,9 @@ extension ExplorerSurfaceNode {
     func flattenedPanes(prefix: String = "", path: [Int] = []) -> [FlattenedPane] {
         switch self {
         case .view(let view):
-            return [FlattenedPane(view: view, position: prefix.isEmpty ? "root" : prefix, path: path)]
+            let label = prefix.isEmpty ? "root" : prefix
+                .replacingOccurrences(of: "right-left", with: "center")
+            return [FlattenedPane(view: view, position: label, path: path)]
         case .split(let split):
             let leftLabel = split.direction == "vertical" ? "top" : "left"
             let rightLabel = split.direction == "vertical" ? "bottom" : "right"
@@ -363,6 +400,86 @@ extension ExplorerSurfaceNode {
             return split.left.flattenedPanes(prefix: leftPrefix, path: path + [0])
                 + split.right.flattenedPanes(prefix: rightPrefix, path: path + [1])
         }
+    }
+
+    /// Remove the pane at the given path. When a pane is removed from a split,
+    /// its sibling takes over the split's position in the tree. Returns nil if
+    /// the removed pane was the root (can't remove the last pane).
+    mutating func removingPane(at path: [Int]) -> ExplorerSurfaceNode? {
+        guard !path.isEmpty else { return nil }
+
+        if path.count == 1 {
+            guard case .split(let split) = self else { return nil }
+            return path[0] == 0 ? split.right : split.left
+        }
+
+        guard case .split(var split) = self else { return nil }
+        let tail = Array(path.dropFirst())
+        if path[0] == 0 {
+            if let replacement = split.left.removingPane(at: tail) {
+                split.left = replacement
+                self = .split(split)
+                return self
+            }
+        } else {
+            if let replacement = split.right.removingPane(at: tail) {
+                split.right = replacement
+                self = .split(split)
+                return self
+            }
+        }
+        return nil
+    }
+
+    func view(at path: [Int]) -> ExplorerSurfaceView? {
+        switch self {
+        case .view(let view):
+            return path.isEmpty ? view : nil
+        case .split(let split):
+            guard let head = path.first else { return nil }
+            let tail = Array(path.dropFirst())
+            return head == 0 ? split.left.view(at: tail) : split.right.view(at: tail)
+        }
+    }
+
+    mutating func updateView(at path: [Int], transform: (inout ExplorerSurfaceView) -> Void) {
+        switch self {
+        case .view(var view):
+            guard path.isEmpty else { return }
+            transform(&view)
+            self = .view(view)
+
+        case .split(var split):
+            guard let head = path.first else { return }
+            let tail = Array(path.dropFirst())
+            if head == 0 {
+                split.left.updateView(at: tail, transform: transform)
+            } else {
+                split.right.updateView(at: tail, transform: transform)
+            }
+            self = .split(split)
+        }
+    }
+}
+
+extension ExplorerSurfaceTree {
+    func view(at path: [Int]) -> ExplorerSurfaceView? {
+        root.view(at: path)
+    }
+
+    mutating func updateView(at path: [Int], transform: (inout ExplorerSurfaceView) -> Void) {
+        root.updateView(at: path, transform: transform)
+    }
+
+    /// Remove the pane at the given path. Returns false if the pane is the
+    /// last one (root view with no splits) — can't remove the only pane.
+    @discardableResult
+    mutating func removePane(at path: [Int]) -> Bool {
+        if let newRoot = root.removingPane(at: path) {
+            root = newRoot
+            return true
+        }
+        return false
     }
 }
 

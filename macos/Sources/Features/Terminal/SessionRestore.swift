@@ -96,7 +96,8 @@ enum SessionRestorer {
     @discardableResult
     static func restore(
         from filePath: String,
-        ghostty: Ghostty.App
+        ghostty: Ghostty.App,
+        mergeExistingWindows: Bool = true
     ) throws -> [String: String] {
         let url = URL(fileURLWithPath: filePath).resolvingSymlinksInPath()
         let data = try Data(contentsOf: url)
@@ -112,7 +113,7 @@ enum SessionRestorer {
         let windowsToRestore = session.windows
 
         // Snapshot existing windows keyed by title.
-        let existing = snapshotExistingWindows()
+        let existing = mergeExistingWindows ? snapshotExistingWindows() : [:]
 
         let ourPID = ProcessInfo.processInfo.processIdentifier
 
@@ -294,6 +295,12 @@ enum SessionRestorer {
         guard let primaryWindow = primaryController.window,
               let tabWindow = tabController.window else { return }
 
-        primaryWindow.addTabbedWindowSafely(tabWindow, ordered: .above)
+        // Append the new tab at the END of the tab group so tabs come back in
+        // the same order they were saved. `ordered: .above` inserts the new
+        // window *after* the receiver in the tab strip, so we have to call it
+        // on the current last window — calling it on `primaryWindow` would
+        // insert each new tab right after the first, producing reverse order.
+        let anchor = primaryWindow.tabGroup?.windows.last ?? primaryWindow
+        anchor.addTabbedWindowSafely(tabWindow, ordered: .above)
     }
 }
