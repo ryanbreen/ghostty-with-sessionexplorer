@@ -71,7 +71,8 @@ struct SessionExplorerView: View {
                 onAssertTemplate: onAssertTemplate,
                 onDuplicateTemplate: duplicateTemplate,
                 onCopyTemplateJSON: copyTemplateJSON,
-                onExportTemplate: exportTemplate
+                onExportTemplate: exportTemplate,
+                onRecaptureWindow: recaptureTemplateWindow(at:)
             )
         }
         .frame(minWidth: 1180, minHeight: 760)
@@ -309,6 +310,99 @@ struct SessionExplorerView: View {
         } catch {
             errorMessage = "Failed to import pasted template JSON: \(error.localizedDescription)"
         }
+    }
+
+    private func recaptureTemplateWindow(at windowIndex: Int) {
+        guard var template = selectedTemplate?.template else { return }
+        guard let liveState else { return }
+        guard template.windows.indices.contains(windowIndex) else { return }
+
+        let templateWindow = template.windows[windowIndex]
+        guard let liveWindow = liveState.windows.first(where: {
+            $0.normalizedTitle == templateWindow.normalizedTitle
+        }) else {
+            return
+        }
+
+        var newTabs: [ExplorerTab] = []
+        newTabs.reserveCapacity(liveWindow.tabs.count)
+
+        for (tabIndex, liveTab) in liveWindow.tabs.enumerated() {
+            let matchingOldTab = matchingTemplateTab(
+                for: liveTab,
+                at: tabIndex,
+                in: templateWindow
+            )
+            let mergedTree = mergeTreePreservingCommands(
+                liveTree: liveTab.surfaceTree,
+                templateTree: matchingOldTab?.surfaceTree
+            )
+
+            newTabs.append(
+                ExplorerTab(
+                    title: liveTab.title ?? matchingOldTab?.title,
+                    surfaceTree: mergedTree
+                )
+            )
+        }
+
+        template.windows[windowIndex].tabs = newTabs
+        template.updatedAt = Date()
+        saveTemplate(template)
+    }
+
+    private func matchingTemplateTab(
+        for liveTab: ExplorerTab,
+        at tabIndex: Int,
+        in templateWindow: ExplorerWindow
+    ) -> ExplorerTab? {
+        if templateWindow.tabs.indices.contains(tabIndex) {
+            return templateWindow.tabs[tabIndex]
+        }
+
+        return templateWindow.tabs.first(where: {
+            $0.workingDirectorySignature == liveTab.workingDirectorySignature
+        })
+    }
+
+    private func mergeTreePreservingCommands(
+        liveTree: ExplorerSurfaceTree,
+        templateTree: ExplorerSurfaceTree?
+    ) -> ExplorerSurfaceTree {
+        var merged = liveTree
+        let livePanes = liveTree.root.flattenedPanes()
+        let templatePanes = templateTree?.root.flattenedPanes() ?? []
+
+        for livePane in livePanes {
+            if let match = templatePanes.first(where: {
+                $0.path == livePane.path && sameWorkingDirectory($0.view.pwd, livePane.view.pwd)
+            }) {
+                if let command = match.view.command {
+                    merged.updateView(at: livePane.path) { view in
+                        view.command = command
+                    }
+                }
+                continue
+            }
+
+            if shouldDefaultLeftColumnCommand(path: livePane.path, tree: liveTree) {
+                merged.updateView(at: livePane.path) { view in
+                    view.command = .dynamic(resolver: "claudeResumeLatest", params: [:])
+                }
+            }
+        }
+
+        return merged
+    }
+
+    private func shouldDefaultLeftColumnCommand(path: [Int], tree: ExplorerSurfaceTree) -> Bool {
+        guard path.count > 0 else { return false }
+        guard case .split(let split) = tree.root else { return false }
+        return split.direction.lowercased() == "horizontal" && path.first == 0
+    }
+
+    private func sameWorkingDirectory(_ lhs: String?, _ rhs: String?) -> Bool {
+        lhs?.normalizedForMatching == rhs?.normalizedForMatching
     }
 }
 

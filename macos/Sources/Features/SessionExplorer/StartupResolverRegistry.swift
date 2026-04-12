@@ -43,7 +43,12 @@ struct StartupResolverRegistry {
 
 private struct ClaudeResumeLatestResolver: StartupResolver {
     func resolve(pwd: String, params: [String: String]) -> String {
-        ClaudeSessionResolver.resolve(pwd: pwd, nth: 0, resolverName: "claudeResumeLatest")
+        let nth = Int(params["n"] ?? "") ?? 0
+        return ClaudeSessionResolver.resolve(
+            pwd: pwd,
+            nth: max(0, nth),
+            resolverName: "claudeResumeLatest"
+        )
     }
 }
 
@@ -62,11 +67,32 @@ private struct ClaudeResumeNthResolver: StartupResolver {
 
 private enum ClaudeSessionResolver {
     static func resolve(pwd: String, nth: Int, resolverName: String) -> String {
-        let encodedPath = pwd.replacingOccurrences(of: "/", with: "-")
-        let directory = FileManager.default.homeDirectoryForCurrentUser
+        let projectsDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude")
             .appendingPathComponent("projects")
-            .appendingPathComponent(encodedPath)
+
+        // Claude Code's path encoding is inconsistent — underscores sometimes
+        // stay as-is and sometimes become hyphens. Try the exact encoding
+        // first, then fall back to underscore→hyphen variant, then scan the
+        // directory for any match.
+        let exactEncoded = pwd.replacingOccurrences(of: "/", with: "-")
+        let altEncoded = exactEncoded.replacingOccurrences(of: "_", with: "-")
+
+        let directory: URL
+        let exactDir = projectsDir.appendingPathComponent(exactEncoded)
+        let altDir = projectsDir.appendingPathComponent(altEncoded)
+
+        if FileManager.default.fileExists(atPath: exactDir.path) {
+            directory = exactDir
+        } else if exactEncoded != altEncoded,
+                  FileManager.default.fileExists(atPath: altDir.path) {
+            directory = altDir
+        } else {
+            return StartupResolverRegistry.failureCommand(
+                resolver: resolverName,
+                reason: "no sessions found for \(pwd)"
+            )
+        }
 
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directory,

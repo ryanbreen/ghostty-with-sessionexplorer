@@ -26,7 +26,8 @@ enum TemplateCompiler {
     }
 
     static func serializedDocument(windows: [ExplorerWindow]) throws -> Data {
-        let records = try windows.map(makeWindowRecord)
+        let normalizedWindows = windows.map(normalizeClaudeResumeOffsets(in:))
+        let records = try normalizedWindows.map(makeWindowRecord)
         let document: [String: Any] = [
             "version": SessionDocument.currentVersion,
             "windows": records,
@@ -112,6 +113,33 @@ enum TemplateCompiler {
         }
 
         return record
+    }
+
+    private static func normalizeClaudeResumeOffsets(in window: ExplorerWindow) -> ExplorerWindow {
+        var normalized = window
+        normalized.tabs = normalized.tabs.map { normalizeClaudeResumeOffsets(in: $0) }
+        return normalized
+    }
+
+    private static func normalizeClaudeResumeOffsets(in tab: ExplorerTab) -> ExplorerTab {
+        var normalized = tab
+        var offsetsByPwd: [String: Int] = [:]
+
+        for pane in normalized.surfaceTree.root.flattenedPanes() {
+            guard case .dynamic(let resolver, var params) = pane.view.command else { continue }
+            guard resolver == "claudeResumeLatest" else { continue }
+
+            let pwdKey = pane.view.pwd?.normalizedForMatching ?? ""
+            let offset = offsetsByPwd[pwdKey, default: 0]
+            offsetsByPwd[pwdKey] = offset + 1
+
+            params["n"] = "\(offset)"
+            normalized.surfaceTree.updateView(at: pane.path) { view in
+                view.command = .dynamic(resolver: "claudeResumeNth", params: params)
+            }
+        }
+
+        return normalized
     }
 
     private static func compiledInitialInput(for view: ExplorerSurfaceView) -> String? {

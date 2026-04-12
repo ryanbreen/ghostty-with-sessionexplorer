@@ -8,6 +8,7 @@ struct WindowCardView: View {
     let dirty: Bool
     let onChange: () -> Void
     let onAssertWindow: (() -> Void)?
+    let onRecaptureWindow: (() -> Void)?
     let onAddTab: (() -> Void)?
     let onDeleteTab: ((Int) -> Void)?
     let onMoveTab: ((Int, Int) -> Void)?
@@ -151,6 +152,16 @@ struct WindowCardView: View {
                     }
                     .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerAccent))
                 }
+            }
+
+            if let onRecaptureWindow,
+               isTemplate,
+               let status = windowDiff?.status,
+               status == .match || status == .partial {
+                Button("Recapture") {
+                    onRecaptureWindow()
+                }
+                .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerAccent))
             }
         }
         .padding(.horizontal, 16)

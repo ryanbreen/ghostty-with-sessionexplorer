@@ -14,6 +14,7 @@ struct SessionMainPanelView: View {
     let onDuplicateTemplate: ((TemplateStore.StoredTemplate) -> Void)?
     let onCopyTemplateJSON: ((TemplateStore.StoredTemplate) -> Void)?
     let onExportTemplate: ((TemplateStore.StoredTemplate) -> Void)?
+    let onRecaptureWindow: ((Int) -> Void)?
 
     @State private var snapshotDraft: ExplorerSnapshot?
     @State private var templateDraft: SessionTemplate?
@@ -35,13 +36,13 @@ struct SessionMainPanelView: View {
         .onAppear {
             loadDrafts()
         }
-        .onChange(of: snapshot?.id) { _ in
+        .task(id: snapshot?.id) {
             loadSnapshotDraft()
         }
         .onChange(of: snapshot?.snapshot) { _ in
             loadSnapshotDraft()
         }
-        .onChange(of: template?.id) { _ in
+        .task(id: template?.id) {
             loadTemplateDraft()
         }
         .onChange(of: template?.template) { _ in
@@ -86,6 +87,7 @@ struct SessionMainPanelView: View {
                                 onAssertWindow: {
                                     onAssertWindow?(snapshotDraft.windows[index])
                                 },
+                                onRecaptureWindow: nil,
                                 onAddTab: nil,
                                 onDeleteTab: nil,
                                 onMoveTab: nil
@@ -122,6 +124,9 @@ struct SessionMainPanelView: View {
                                 onAssertWindow: {
                                     onAssertWindow?(templateDraft.windows[index])
                                 },
+                                onRecaptureWindow: {
+                                    onRecaptureWindow?(index)
+                                },
                                 onAddTab: {
                                     addTab(toWindowAt: index)
                                 },
@@ -138,6 +143,11 @@ struct SessionMainPanelView: View {
                 }
             } else {
                 placeholder(message: "No windows in this template")
+            }
+        }
+        .onAppear {
+            if templateDraft == nil {
+                templateDraft = template.template
             }
         }
     }
