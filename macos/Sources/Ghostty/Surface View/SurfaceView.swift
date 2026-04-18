@@ -626,6 +626,9 @@ extension Ghostty {
         /// Extra input to send as stdin
         var initialInput: String?
 
+        /// Stable state identity used by Session Explorer pane matching.
+        var stateID: String?
+
         /// Wait after the command
         var waitAfterCommand: Bool = false
 

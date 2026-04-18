@@ -1,55 +1,34 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SessionExplorerView: View {
-    @StateObject private var store = SessionStore()
-    @StateObject private var templateStore = TemplateStore()
-    @State private var selection: SessionExplorerSelection?
+    @StateObject private var stateStore = StateStore()
+    @State private var selection: SessionExplorerSelection? = .state
     @State private var diff: SessionDiff?
     @State private var liveState: ExplorerSnapshot?
     @State private var liveRefreshTask: Task<Void, Never>?
-    @State private var importJSONString = ""
-    @State private var isPresentingImportJSONSheet = false
     @State private var errorMessage: String?
 
     let refreshLiveState: (() async -> ExplorerSnapshot?)?
-    let computeDiff: ((SessionStore.StoredSession, ExplorerSnapshot?) -> SessionDiff?)?
-    let onSnapshotCurrent: (() -> Void)?
-    let onAssertSnapshot: ((ExplorerSnapshot) -> Void)?
     let onAssertWindow: ((ExplorerWindow) -> Void)?
-    let onAssertTemplate: ((SessionTemplate) -> Void)?
+    let onAssertState: ((SessionTemplate) -> Void)?
 
     init(
         refreshLiveState: (() async -> ExplorerSnapshot?)? = nil,
-        computeDiff: ((SessionStore.StoredSession, ExplorerSnapshot?) -> SessionDiff?)? = nil,
-        onSnapshotCurrent: (() -> Void)? = nil,
-        onAssertSnapshot: ((ExplorerSnapshot) -> Void)? = nil,
         onAssertWindow: ((ExplorerWindow) -> Void)? = nil,
-        onAssertTemplate: ((SessionTemplate) -> Void)? = nil
+        onAssertState: ((SessionTemplate) -> Void)? = nil
     ) {
         self.refreshLiveState = refreshLiveState
-        self.computeDiff = computeDiff
-        self.onSnapshotCurrent = onSnapshotCurrent
-        self.onAssertSnapshot = onAssertSnapshot
         self.onAssertWindow = onAssertWindow
-        self.onAssertTemplate = onAssertTemplate
+        self.onAssertState = onAssertState
     }
 
     var body: some View {
         HSplitView {
             SessionSidebarView(
-                store: store,
-                templateStore: templateStore,
+                stateStore: stateStore,
                 selection: $selection,
-                onSnapshotCurrent: onSnapshotCurrent,
-                onDeleteSnapshot: deleteSnapshot,
-                onDeleteTemplate: deleteTemplate,
-                onImportTemplateFile: importTemplateFromFile,
-                onPasteTemplateJSON: {
-                    importJSONString = ""
-                    isPresentingImportJSONSheet = true
-                }
+                onRestoreBackup: restoreBackup
             )
             .frame(minWidth: 290, idealWidth: 290, maxWidth: 290)
             .background(Color.explorerSurface2)
@@ -60,19 +39,15 @@ struct SessionExplorerView: View {
             }
 
             SessionMainPanelView(
-                snapshot: selectedSnapshot,
-                template: selectedTemplate,
+                state: selectedState,
+                backup: selectedBackup,
                 diff: diff,
-                onAssertSnapshot: onAssertSnapshot,
+                onSaveState: saveState,
+                onSyncFromLive: syncFromLive,
+                onAssertState: onAssertState,
                 onAssertWindow: onAssertWindow,
-                onSaveSnapshot: saveSnapshot,
-                onPromoteSnapshot: promoteSnapshot,
-                onSaveTemplate: saveTemplate,
-                onAssertTemplate: onAssertTemplate,
-                onDuplicateTemplate: duplicateTemplate,
-                onCopyTemplateJSON: copyTemplateJSON,
-                onExportTemplate: exportTemplate,
-                onRecaptureWindow: recaptureTemplateWindow(at:)
+                onRecaptureWindow: recaptureStateWindow(at:),
+                onRestoreBackup: restoreBackup
             )
         }
         .frame(minWidth: 1180, minHeight: 760)
@@ -88,28 +63,15 @@ struct SessionExplorerView: View {
         .onChange(of: selection) { _ in
             refreshDiff()
         }
-        .onChange(of: store.sessions.map(\.id)) { _ in
+        .onChange(of: stateStore.state?.id) { _ in
             maintainSelection()
             refreshDiff()
         }
-        .onChange(of: templateStore.templates.map(\.id)) { _ in
+        .onChange(of: stateStore.backups.map(\.id)) { _ in
             maintainSelection()
         }
-        .sheet(isPresented: $isPresentingImportJSONSheet) {
-            ImportTemplateJSONSheet(
-                json: $importJSONString,
-                onCancel: {
-                    isPresentingImportJSONSheet = false
-                },
-                onImport: {
-                    importTemplateFromJSON()
-                }
-            )
-            .frame(width: 640, height: 420)
-            .padding(20)
-        }
         .alert(
-            "Session Explorer Error",
+            "Ghostty State Error",
             isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { isPresented in
@@ -125,20 +87,23 @@ struct SessionExplorerView: View {
         }
     }
 
-    private var selectedSnapshot: SessionStore.StoredSession? {
-        guard case .snapshot(let id) = selection else { return nil }
-        return store.sessions.first(where: { $0.id == id })
+    private var selectedState: StateStore.StoredState? {
+        guard selection == .state else { return nil }
+        return stateStore.state
     }
 
-    private var selectedTemplate: TemplateStore.StoredTemplate? {
-        guard case .template(let id) = selection else { return nil }
-        return templateStore.templates.first(where: { $0.id == id })
+    private var selectedBackup: StateStore.StoredBackup? {
+        guard case .backup(let id) = selection else { return nil }
+        return stateStore.backups.first(where: { $0.id == id })
     }
 
     @MainActor
     private func handleInitialLoad() async {
-        store.loadSessions()
-        templateStore.loadTemplates()
+        do {
+            try stateStore.loadState()
+        } catch {
+            errorMessage = "Failed to load Ghostty state: \(error.localizedDescription)"
+        }
         maintainSelection()
         refreshDiff()
         startLiveRefreshLoop()
@@ -147,22 +112,20 @@ struct SessionExplorerView: View {
     @MainActor
     private func maintainSelection() {
         switch selection {
-        case .template(let id):
-            if templateStore.templates.contains(where: { $0.id == id }) {
+        case .state:
+            if stateStore.state != nil {
                 return
             }
-        case .snapshot(let id):
-            if store.sessions.contains(where: { $0.id == id }) {
+        case .backup(let id):
+            if stateStore.backups.contains(where: { $0.id == id }) {
                 return
             }
         case nil:
             break
         }
 
-        if let template = templateStore.templates.first {
-            selection = .template(template.id)
-        } else if let snapshot = store.sessions.first {
-            selection = .snapshot(snapshot.id)
+        if stateStore.state != nil {
+            selection = .state
         } else {
             selection = nil
         }
@@ -170,10 +133,8 @@ struct SessionExplorerView: View {
 
     @MainActor
     private func refreshDiff() {
-        if let selectedSnapshot, let computeDiff {
-            diff = computeDiff(selectedSnapshot, liveState)
-        } else if let selectedTemplate, let liveState {
-            diff = SessionDiff.diff(session: selectedTemplate.template.asSnapshot, live: liveState)
+        if let selectedState, let liveState {
+            diff = SessionDiff.diff(session: selectedState.template.asSnapshot, live: liveState)
         } else {
             diff = nil
         }
@@ -201,208 +162,86 @@ struct SessionExplorerView: View {
         }
     }
 
-    private func deleteSnapshot(_ session: SessionStore.StoredSession) {
+    private func saveState(_ template: SessionTemplate) {
         do {
-            try store.delete(session: session)
+            _ = try stateStore.silentSave(template: template)
         } catch {
-            errorMessage = "Failed to delete snapshot: \(error.localizedDescription)"
+            errorMessage = "Failed to save state edits: \(error.localizedDescription)"
         }
     }
 
-    private func deleteTemplate(_ template: TemplateStore.StoredTemplate) {
-        do {
-            try templateStore.delete(template: template)
-        } catch {
-            errorMessage = "Failed to delete template: \(error.localizedDescription)"
-        }
-    }
-
-    private func saveSnapshot(_ session: SessionStore.StoredSession, snapshot: ExplorerSnapshot) {
-        do {
-            try store.updateSnapshot(session: session, snapshot: snapshot)
-        } catch {
-            errorMessage = "Failed to save snapshot edits: \(error.localizedDescription)"
-        }
-    }
-
-    private func promoteSnapshot(_ snapshot: ExplorerSnapshot, name: String) {
-        do {
-            let stored = try templateStore.save(
-                template: SessionTemplate.promote(snapshot: snapshot, name: name)
-            )
-            selection = .template(stored.id)
-        } catch {
-            errorMessage = "Failed to save template: \(error.localizedDescription)"
-        }
-    }
-
-    private func saveTemplate(_ template: SessionTemplate) {
-        do {
-            _ = try templateStore.silentSave(template: template)
-        } catch {
-            errorMessage = "Failed to save template edits: \(error.localizedDescription)"
-        }
-    }
-
-    private func duplicateTemplate(_ template: TemplateStore.StoredTemplate) {
-        do {
-            let duplicated = try templateStore.duplicate(template: template)
-            selection = .template(duplicated.id)
-        } catch {
-            errorMessage = "Failed to duplicate template: \(error.localizedDescription)"
-        }
-    }
-
-    private func copyTemplateJSON(_ template: TemplateStore.StoredTemplate) {
-        do {
-            let data = try TemplateStore.jsonEncoder.encode(template.template)
-            guard let json = String(data: data, encoding: .utf8) else {
-                throw CocoaError(.fileReadUnknown)
-            }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(json, forType: .string)
-        } catch {
-            errorMessage = "Failed to copy template JSON: \(error.localizedDescription)"
-        }
-    }
-
-    private func exportTemplate(_ template: TemplateStore.StoredTemplate) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType.json]
-        panel.nameFieldStringValue = "\(template.name).json"
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            let data = try TemplateStore.jsonEncoder.encode(template.template)
-            try data.write(to: url, options: [.atomic])
-        } catch {
-            errorMessage = "Failed to export template: \(error.localizedDescription)"
-        }
-    }
-
-    private func importTemplateFromFile() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType.json]
-        panel.allowsMultipleSelection = false
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            let data = try Data(contentsOf: url)
-            let template = try TemplateStore.jsonDecoder.decode(SessionTemplate.self, from: data)
-            let stored = try templateStore.save(template: template)
-            selection = .template(stored.id)
-        } catch {
-            errorMessage = "Failed to import template: \(error.localizedDescription)"
-        }
-    }
-
-    private func importTemplateFromJSON() {
-        do {
-            guard let data = importJSONString.data(using: .utf8) else {
-                throw CocoaError(.fileReadInapplicableStringEncoding)
-            }
-            let template = try TemplateStore.jsonDecoder.decode(SessionTemplate.self, from: data)
-            let stored = try templateStore.save(template: template)
-            selection = .template(stored.id)
-            isPresentingImportJSONSheet = false
-        } catch {
-            errorMessage = "Failed to import pasted template JSON: \(error.localizedDescription)"
-        }
-    }
-
-    private func recaptureTemplateWindow(at windowIndex: Int) {
-        guard var template = selectedTemplate?.template else { return }
-        guard let liveState else { return }
-        guard template.windows.indices.contains(windowIndex) else { return }
-
-        let templateWindow = template.windows[windowIndex]
-        guard let liveWindow = liveState.windows.first(where: {
-            $0.normalizedTitle == templateWindow.normalizedTitle
-        }) else {
+    private func syncFromLive() {
+        guard var template = stateStore.state?.template else { return }
+        guard let liveState else {
+            errorMessage = "No live Ghostty windows are available to sync."
             return
         }
 
-        var newTabs: [ExplorerTab] = []
-        newTabs.reserveCapacity(liveWindow.tabs.count)
-
-        for (tabIndex, liveTab) in liveWindow.tabs.enumerated() {
-            let matchingOldTab = matchingTemplateTab(
-                for: liveTab,
-                at: tabIndex,
-                in: templateWindow
-            )
-            let mergedTree = mergeTreePreservingCommands(
-                liveTree: liveTab.surfaceTree,
-                templateTree: matchingOldTab?.surfaceTree
-            )
-
-            newTabs.append(
-                ExplorerTab(
-                    title: liveTab.title ?? matchingOldTab?.title,
-                    surfaceTree: mergedTree
-                )
-            )
-        }
-
-        template.windows[windowIndex].tabs = newTabs
-        template.updatedAt = Date()
-        saveTemplate(template)
-    }
-
-    private func matchingTemplateTab(
-        for liveTab: ExplorerTab,
-        at tabIndex: Int,
-        in templateWindow: ExplorerWindow
-    ) -> ExplorerTab? {
-        if templateWindow.tabs.indices.contains(tabIndex) {
-            return templateWindow.tabs[tabIndex]
-        }
-
-        return templateWindow.tabs.first(where: {
-            $0.workingDirectorySignature == liveTab.workingDirectorySignature
-        })
-    }
-
-    private func mergeTreePreservingCommands(
-        liveTree: ExplorerSurfaceTree,
-        templateTree: ExplorerSurfaceTree?
-    ) -> ExplorerSurfaceTree {
-        var merged = liveTree
-        let livePanes = liveTree.root.flattenedPanes()
-        let templatePanes = templateTree?.root.flattenedPanes() ?? []
-
-        for livePane in livePanes {
-            if let match = templatePanes.first(where: {
-                $0.path == livePane.path && sameWorkingDirectory($0.view.pwd, livePane.view.pwd)
-            }) {
-                if let command = match.view.command {
-                    merged.updateView(at: livePane.path) { view in
-                        view.command = command
-                    }
-                }
+        var didSync = false
+        for index in template.windows.indices {
+            let stateWindow = template.windows[index]
+            guard let liveWindow = liveState.windows.first(where: {
+                $0.normalizedTitle == stateWindow.normalizedTitle
+            }) else {
                 continue
             }
 
-            if shouldDefaultLeftColumnCommand(path: livePane.path, tree: liveTree) {
-                merged.updateView(at: livePane.path) { view in
-                    view.command = .dynamic(resolver: "claudeResumeLatest", params: [:])
-                }
-            }
+            template.windows[index] = StateWindowRecapturer.recapturedWindow(
+                from: liveWindow,
+                preservingCommandsFrom: stateWindow
+            )
+            didSync = true
         }
 
-        return merged
+        guard didSync else {
+            errorMessage = "No state windows matched live windows by title."
+            return
+        }
+
+        do {
+            _ = try stateStore.save(template: template)
+            selection = .state
+            refreshDiff()
+        } catch {
+            errorMessage = "Failed to sync from live: \(error.localizedDescription)"
+        }
     }
 
-    private func shouldDefaultLeftColumnCommand(path: [Int], tree: ExplorerSurfaceTree) -> Bool {
-        guard path.count > 0 else { return false }
-        guard case .split(let split) = tree.root else { return false }
-        return split.direction.lowercased() == "horizontal" && path.first == 0
+    private func recaptureStateWindow(at windowIndex: Int) {
+        guard var template = stateStore.state?.template else { return }
+        guard let liveState else { return }
+        guard template.windows.indices.contains(windowIndex) else { return }
+
+        let stateWindow = template.windows[windowIndex]
+        guard let liveWindow = liveState.windows.first(where: {
+            $0.normalizedTitle == stateWindow.normalizedTitle
+        }) else {
+            errorMessage = "No live window matched \(stateWindow.displayTitle)."
+            return
+        }
+
+        template.windows[windowIndex] = StateWindowRecapturer.recapturedWindow(
+            from: liveWindow,
+            preservingCommandsFrom: stateWindow
+        )
+
+        do {
+            _ = try stateStore.save(template: template)
+            selection = .state
+            refreshDiff()
+        } catch {
+            errorMessage = "Failed to recapture window: \(error.localizedDescription)"
+        }
     }
 
-    private func sameWorkingDirectory(_ lhs: String?, _ rhs: String?) -> Bool {
-        lhs?.normalizedForMatching == rhs?.normalizedForMatching
+    private func restoreBackup(_ backup: StateStore.StoredBackup) {
+        do {
+            _ = try stateStore.restore(backup: backup)
+            selection = .state
+            refreshDiff()
+        } catch {
+            errorMessage = "Failed to restore backup: \(error.localizedDescription)"
+        }
     }
 }
 

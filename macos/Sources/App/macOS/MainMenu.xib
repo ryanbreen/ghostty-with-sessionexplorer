@@ -53,7 +53,9 @@
                 <outlet property="menuResetFontSize" destination="Jah-MY-aLX" id="ger-qM-wrm"/>
                 <outlet property="menuRestoreSession" destination="WRB-h1-v3s" id="WRB-h1-out"/>
                 <outlet property="menuReturnToDefaultSize" destination="Gbx-Vi-OGC" id="po9-qC-Iz6"/>
+                <outlet property="menuAssertWindowState" destination="WRB-a0-v2e" id="WRB-a0-out"/>
                 <outlet property="menuSaveSession" destination="WRB-s0-v1e" id="WRB-s0-out"/>
+                <outlet property="menuSaveWindowState" destination="WRB-w0-v2e" id="WRB-w0-out"/>
                 <outlet property="menuScrollToSelection" destination="1rN-4k-Dz3" id="aRr-aT-oe3"/>
                 <outlet property="menuSecureInput" destination="oC6-w4-qI7" id="PCc-pe-Mda"/>
                 <outlet property="menuSelectAll" destination="q2h-lq-e4r" id="s98-r1-Jcv"/>
@@ -107,13 +109,25 @@
                                     <action selector="reloadConfig:" target="bbz-4X-AYv" id="h5x-tu-Izk"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Save Session" keyEquivalent="s" id="WRB-s0-v1e">
+                            <menuItem title="Save Window State" keyEquivalent="s" id="WRB-w0-v2e">
+                                <modifierMask key="keyEquivalentModifierMask" command="YES" shift="YES"/>
+                                <connections>
+                                    <action selector="saveWindowState:" target="bbz-4X-AYv" id="WRB-w0-v2f"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Assert Window State" keyEquivalent="s" id="WRB-a0-v2e">
+                                <modifierMask key="keyEquivalentModifierMask" option="YES" command="YES" shift="YES"/>
+                                <connections>
+                                    <action selector="assertWindowState:" target="bbz-4X-AYv" id="WRB-a0-v2f"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem hidden="YES" enabled="NO" title="Save Session" keyEquivalent="s" id="WRB-s0-v1e">
                                 <modifierMask key="keyEquivalentModifierMask" command="YES" shift="YES"/>
                                 <connections>
                                     <action selector="saveSession:" target="bbz-4X-AYv" id="WRB-s0-v1f"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Restore Session" id="WRB-h1-v3s">
+                            <menuItem hidden="YES" enabled="NO" title="Restore Session" id="WRB-h1-v3s">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="restoreSession:" target="bbz-4X-AYv" id="WRB-h1-v3t"/>

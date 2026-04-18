@@ -1,17 +1,11 @@
 import SwiftUI
 
 struct SessionSidebarView: View {
-    @ObservedObject var store: SessionStore
-    @ObservedObject var templateStore: TemplateStore
+    @ObservedObject var stateStore: StateStore
     @Binding var selection: SessionExplorerSelection?
-    let onSnapshotCurrent: (() -> Void)?
-    let onDeleteSnapshot: (SessionStore.StoredSession) -> Void
-    let onDeleteTemplate: (TemplateStore.StoredTemplate) -> Void
-    let onImportTemplateFile: () -> Void
-    let onPasteTemplateJSON: () -> Void
+    let onRestoreBackup: (StateStore.StoredBackup) -> Void
 
-    @State private var templatesExpanded = true
-    @State private var snapshotsExpanded = true
+    @State private var backupsExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,63 +13,55 @@ struct SessionSidebarView: View {
 
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    sectionHeader(
-                        title: "Templates",
-                        isExpanded: $templatesExpanded,
-                        count: templateStore.templates.count
-                    )
-
-                    if templatesExpanded {
-                        ForEach(templateStore.templates) { template in
-                            SessionSidebarRowView(
-                                kind: .template,
-                                title: template.name,
-                                subtitle: "\(template.windowCount) windows, \(template.tabCount) tabs",
-                                badge: nil,
-                                isSelected: selection == .template(template.id),
-                                onSelect: {
-                                    selection = .template(template.id)
-                                },
-                                onDelete: {
-                                    onDeleteTemplate(template)
-                                }
-                            )
-                        }
+                    if let state = stateStore.state {
+                        SessionSidebarStateRowView(
+                            title: state.name,
+                            subtitle: "\(state.windowCount) windows, \(state.tabCount) tabs",
+                            isSelected: selection == .state,
+                            onSelect: {
+                                selection = .state
+                            }
+                        )
+                    } else {
+                        SessionSidebarStateRowView(
+                            title: "Ghostty State",
+                            subtitle: "No canonical state file",
+                            isSelected: selection == .state,
+                            onSelect: {
+                                selection = .state
+                            }
+                        )
                     }
 
                     sectionHeader(
-                        title: "Snapshots",
-                        isExpanded: $snapshotsExpanded,
-                        count: store.sessions.count
+                        title: "Backups",
+                        isExpanded: $backupsExpanded,
+                        count: stateStore.backups.count
                     )
 
-                    if snapshotsExpanded {
-                        ForEach(store.sessions) { session in
-                            SessionSidebarRowView(
-                                kind: .snapshot,
-                                title: SessionExplorerFormatters.sidebarTimestamp.string(from: session.date),
-                                subtitle: "\(session.windowCount) windows, \(session.tabCount) tabs",
-                                badge: session.isLatest ? "ACTIVE" : nil,
-                                isSelected: selection == .snapshot(session.id),
-                                onSelect: {
-                                    selection = .snapshot(session.id)
+                    if backupsExpanded {
+                        ForEach(stateStore.backups) { backup in
+                            SessionSidebarBackupRowView(
+                                title: SessionExplorerFormatters.sidebarTimestamp.string(from: backup.date),
+                                subtitle: "\(backup.windowCount) windows, \(backup.tabCount) tabs",
+                                isSelected: selection == .backup(backup.id),
+                                onView: {
+                                    selection = .backup(backup.id)
                                 },
-                                onDelete: {
-                                    onDeleteSnapshot(session)
+                                onRestore: {
+                                    onRestoreBackup(backup)
                                 }
                             )
                         }
                     }
                 }
             }
-
-            footer
         }
         .background(Color.explorerSurface2)
     }
 
     private var header: some View {
-        SessionExplorerHeaderLabel(text: "Session Explorer")
+        SessionExplorerHeaderLabel(text: "Ghostty State")
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -85,30 +71,6 @@ struct SessionSidebarView: View {
                     .fill(Color.explorerBorder)
                     .frame(height: 1)
             }
-    }
-
-    private var footer: some View {
-        VStack(spacing: 8) {
-            Rectangle()
-                .fill(Color.explorerBorder)
-                .frame(height: 1)
-
-            Button("Snapshot Current") {
-                explorerDebugLog("SessionSidebarView button action fired: onSnapshotCurrent=\(onSnapshotCurrent == nil ? "nil" : "set")")
-                onSnapshotCurrent?()
-            }
-            .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerAccent))
-
-            HStack(spacing: 8) {
-                Button("Import File…", action: onImportTemplateFile)
-                    .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerAccent))
-
-                Button("Paste JSON", action: onPasteTemplateJSON)
-                    .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerAccent))
-            }
-        }
-        .padding(12)
-        .background(Color.explorerSurface2)
     }
 
     private func sectionHeader(title: String, isExpanded: Binding<Bool>, count: Int) -> some View {
@@ -143,29 +105,76 @@ struct SessionSidebarView: View {
     }
 }
 
-private struct SessionSidebarRowView: View {
-    enum Kind {
-        case template
-        case snapshot
-    }
-
-    let kind: Kind
+private struct SessionSidebarStateRowView: View {
     let title: String
     let subtitle: String
-    let badge: String?
     let isSelected: Bool
     let onSelect: () -> Void
-    let onDelete: () -> Void
 
     @State private var isHovering = false
-    @State private var isPresentingDeleteConfirmation = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "rectangle.split.3x1.fill")
+                .font(.system(size: 12))
+                .foregroundColor(.explorerAccent)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundColor(isSelected ? .explorerAccent : .explorerText)
+                    .lineLimit(1)
+
+                Text(subtitle)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.explorerMuted)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(backgroundColor)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(isSelected ? Color.explorerAccent : Color.clear)
+                .frame(width: 2)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.explorerBorder.opacity(0.50))
+                .frame(height: 1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .onHover { isHovering = $0 }
+    }
+
+    private var backgroundColor: Color {
+        if isSelected { return .explorerSurface4 }
+        if isHovering { return .explorerSurface3 }
+        return .clear
+    }
+}
+
+private struct SessionSidebarBackupRowView: View {
+    let title: String
+    let subtitle: String
+    let isSelected: Bool
+    let onView: () -> Void
+    let onRestore: () -> Void
+
+    @State private var isHovering = false
+    @State private var isPresentingRestoreConfirmation = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: kind == .template ? "square.stack.3d.up.fill" : "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
                     .font(.system(size: 11))
-                    .foregroundColor(kind == .template ? .explorerAccent : .explorerProcess)
+                    .foregroundColor(.explorerProcess)
 
                 Text(title)
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
@@ -173,35 +182,23 @@ private struct SessionSidebarRowView: View {
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
-
-                if let badge {
-                    Text(badge)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.explorerAccent)
-                        .kerning(0.8)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.explorerAccent.opacity(0.15))
-                        )
-                }
-
-                if isHovering {
-                    Button(role: .destructive) {
-                        isPresentingDeleteConfirmation = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 11))
-                            .foregroundColor(.explorerMissing)
-                    }
-                    .buttonStyle(.plain)
-                }
             }
 
-            Text(subtitle)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(.explorerMuted)
+            HStack(spacing: 8) {
+                Text(subtitle)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.explorerMuted)
+
+                Spacer(minLength: 8)
+
+                Button("View", action: onView)
+                    .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerMuted))
+
+                Button("Restore") {
+                    isPresentingRestoreConfirmation = true
+                }
+                .buttonStyle(SessionExplorerOutlineButtonStyle(tint: .explorerAccent))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, 14)
@@ -219,16 +216,13 @@ private struct SessionSidebarRowView: View {
                 .frame(height: 1)
         }
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        .onTapGesture(perform: onView)
         .onHover { isHovering = $0 }
-        .alert(
-            kind == .template ? "Delete template?" : "Delete snapshot?",
-            isPresented: $isPresentingDeleteConfirmation
-        ) {
+        .alert("Restore backup?", isPresented: $isPresentingRestoreConfirmation) {
             Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive, action: onDelete)
+            Button("Restore", role: .destructive, action: onRestore)
         } message: {
-            Text("This removes the JSON file from disk.")
+            Text("This replaces state.json after first backing up the current canonical state.")
         }
     }
 

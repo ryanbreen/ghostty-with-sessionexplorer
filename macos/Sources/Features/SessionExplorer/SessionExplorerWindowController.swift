@@ -24,7 +24,7 @@ final class SessionExplorerWindowController: NSWindowController, NSWindowDelegat
             backing: .buffered,
             defer: false
         )
-        window.title = "Session Explorer"
+        window.title = "Ghostty State"
         window.center()
         window.tabbingMode = .disallowed
 
@@ -47,34 +47,6 @@ final class SessionExplorerWindowController: NSWindowController, NSWindowDelegat
                         return nil
                     }
                 },
-                computeDiff: { session, liveState in
-                    guard let live = liveState else {
-                        explorerDebugLog(
-                            "computeDiff skipped: session_id=\(session.id) live_state=nil"
-                        )
-                        return nil
-                    }
-
-                    let diff = SessionDiff.diff(session: session.snapshot, live: live)
-                    explorerDebugLog(
-                        "computeDiff completed: session_id=\(session.id) windows=\(diff.windows.count) missing=\(diff.missingCount) partial=\(diff.partialCount) match=\(diff.matchCount)"
-                        )
-                    return diff
-                },
-                onSnapshotCurrent: { [weak assertController] in
-                    explorerDebugLog("onSnapshotCurrent invoked")
-                    assertController?.snapshotCurrent()
-                },
-                onAssertSnapshot: { [weak assertController] snapshot in
-                    explorerDebugLog(
-                        "onAssertSnapshot closure fired: windows=\(snapshot.windows.count)"
-                    )
-                    guard let ac = assertController else {
-                        explorerDebugLog("onAssertSnapshot aborted: assertController released")
-                        return
-                    }
-                    Task { @MainActor in await ac.assertAll(snapshot) }
-                },
                 onAssertWindow: { [weak assertController] window in
                     explorerDebugLog(
                         "onAssertWindow closure fired: window_id=\(window.id) title=\(window.displayTitle)"
@@ -83,14 +55,14 @@ final class SessionExplorerWindowController: NSWindowController, NSWindowDelegat
                         explorerDebugLog("onAssertWindow aborted: assertController released")
                         return
                     }
-                    Task { @MainActor in await ac.assertWindow(window) }
+                    Task { @MainActor in await ac.assertTemplateWindow(window) }
                 },
-                onAssertTemplate: { [weak assertController] template in
+                onAssertState: { [weak assertController] template in
                     explorerDebugLog(
-                        "onAssertTemplate closure fired: template_id=\(template.id) windows=\(template.windows.count)"
+                        "onAssertState closure fired: template_id=\(template.id) windows=\(template.windows.count)"
                     )
                     guard let ac = assertController else {
-                        explorerDebugLog("onAssertTemplate aborted: assertController released")
+                        explorerDebugLog("onAssertState aborted: assertController released")
                         return
                     }
                     Task { @MainActor in await ac.assertTemplate(template) }

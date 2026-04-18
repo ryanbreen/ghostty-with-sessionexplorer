@@ -31,14 +31,17 @@ struct ExplorerSnapshot: Codable, Equatable {
                     return nil
                 }
 
+                let tabStateID = tabSurfaces.compactMap { firstNonEmpty($0.tabStateID) }.first
                 let title = tabSurfaces.compactMap(\.tabTitle).first(where: { !$0.isEmpty })
                 let root = buildNode(from: tabSurfaces.map(LivePane.init))
                 let surfaceTree = ExplorerSurfaceTree(root: root)
-                return ExplorerTab(title: title, surfaceTree: surfaceTree)
+                return ExplorerTab(id: tabStateID, title: title, surfaceTree: surfaceTree)
             }
 
+            let windowStateID = windowSurfaces.compactMap { firstNonEmpty($0.windowStateID) }.first
             let title = windowSurfaces.compactMap(\.windowTitle).first(where: { !$0.isEmpty })
-            return ExplorerWindow(id: String(windowID), title: title, workspace: nil, tabs: tabs)
+            let workspace = windowSurfaces.compactMap(\.windowWorkspace).first
+            return ExplorerWindow(id: windowStateID ?? String(windowID), title: title, workspace: workspace, tabs: tabs)
         }
 
         return ExplorerSnapshot(windows: windows)
@@ -72,9 +75,16 @@ struct ExplorerSnapshot: Codable, Equatable {
             return buildNode(from: leftPanes)
         }
 
+        // Recover the direction of THIS split from any pane that passes
+        // through it. SurfaceListSnapshotter emits the per-level direction
+        // alongside the split path; without this, every vertical split
+        // collapses to horizontal on round-trip.
+        let direction = panes.first(where: { !$0.directions.isEmpty })?
+            .outermostDirection ?? "horizontal"
+
         return .split(
             ExplorerSurfaceSplit(
-                direction: "horizontal",
+                direction: direction,
                 ratio: 0.5,
                 left: buildNode(from: leftPanes),
                 right: buildNode(from: rightPanes)
@@ -106,7 +116,7 @@ struct ExplorerWindow: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
+        id = firstNonEmpty(try container.decodeIfPresent(String.self, forKey: .id)) ?? ""
         title = try container.decodeIfPresent(String.self, forKey: .title)
         tabs = try container.decode([ExplorerTab].self, forKey: .tabs)
         workspace = try Self.decodeWorkspace(from: container)
@@ -148,10 +158,12 @@ struct ExplorerWindow: Codable, Identifiable, Equatable {
 }
 
 struct ExplorerTab: Codable, Equatable {
+    var id: String?
     var title: String?
     var surfaceTree: ExplorerSurfaceTree
 
-    init(title: String? = nil, surfaceTree: ExplorerSurfaceTree) {
+    init(id: String? = nil, title: String? = nil, surfaceTree: ExplorerSurfaceTree) {
+        self.id = id
         self.title = title
         self.surfaceTree = surfaceTree
     }
@@ -207,6 +219,7 @@ indirect enum ExplorerSurfaceNode: Codable, Equatable {
 
 struct ExplorerSurfaceView: Codable, Equatable {
     var id: String?
+    var stateID: String?
     var pwd: String?
     var title: String?
     var foregroundPid: Int?
@@ -216,6 +229,7 @@ struct ExplorerSurfaceView: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case stateID
         case pwd
         case title
         case foregroundPid
@@ -227,6 +241,7 @@ struct ExplorerSurfaceView: Codable, Equatable {
 
     init(
         id: String? = nil,
+        stateID: String? = nil,
         pwd: String? = nil,
         title: String? = nil,
         foregroundPid: Int? = nil,
@@ -235,6 +250,7 @@ struct ExplorerSurfaceView: Codable, Equatable {
         command: TemplateCommand? = nil
     ) {
         self.id = id
+        self.stateID = stateID
         self.pwd = pwd
         self.title = title
         self.foregroundPid = foregroundPid
@@ -246,6 +262,7 @@ struct ExplorerSurfaceView: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(String.self, forKey: .id)
+        stateID = try container.decodeIfPresent(String.self, forKey: .stateID)
         pwd = try container.decodeIfPresent(String.self, forKey: .pwd)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         foregroundPid = try container.decodeIfPresent(Int.self, forKey: .foregroundPid)
@@ -266,6 +283,7 @@ struct ExplorerSurfaceView: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(id, forKey: .id)
+        try container.encodeIfPresent(stateID, forKey: .stateID)
         try container.encodeIfPresent(pwd, forKey: .pwd)
         try container.encodeIfPresent(title, forKey: .title)
         try container.encodeIfPresent(foregroundPid, forKey: .foregroundPid)
@@ -319,7 +337,11 @@ struct ExplorerSurfaceSplit: Codable, Equatable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(direction, forKey: .direction)
+        // Always write the tagged-dict form (e.g. {"horizontal": {}}) so
+        // SessionRestorer's SplitTree.Direction decoder accepts it.
+        let normalized = direction.lowercased()
+        let tag = (normalized == "vertical") ? "vertical" : "horizontal"
+        try container.encode([tag: [String: String]()], forKey: .direction)
         try container.encode(ratio, forKey: .ratio)
         try container.encode(left, forKey: .left)
         try container.encode(right, forKey: .right)
@@ -485,34 +507,64 @@ extension ExplorerSurfaceTree {
 
 struct LiveSurfaceRecord: Decodable {
     let surfaceID: String
+    let stateID: String?
+    let windowStateID: String?
+    let tabStateID: String?
     let windowID: Int
     let windowTitle: String?
+    let windowWorkspace: Int?
     let tabIndex: Int
     let tabTitle: String?
     let splitPath: [Int]
+    let splitDirections: [String]
     let shellPid: Int?
     let workingDirectory: String?
 
     private enum CodingKeys: String, CodingKey {
         case surfaceID = "surface_id"
+        case stateID = "state_id"
+        case windowStateID = "window_state_id"
+        case tabStateID = "tab_state_id"
         case windowID = "window_id"
         case windowTitle = "window_title"
+        case windowWorkspace = "window_workspace"
         case tabIndex = "tab_index"
         case tabTitle = "tab_title"
         case splitPath = "split_path"
+        case splitDirections = "split_directions"
         case shellPid = "shell_pid"
         case workingDirectory = "working_directory"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        surfaceID = try c.decode(String.self, forKey: .surfaceID)
+        stateID = try c.decodeIfPresent(String.self, forKey: .stateID)
+        windowStateID = try c.decodeIfPresent(String.self, forKey: .windowStateID)
+        tabStateID = try c.decodeIfPresent(String.self, forKey: .tabStateID)
+        windowID = try c.decode(Int.self, forKey: .windowID)
+        windowTitle = try c.decodeIfPresent(String.self, forKey: .windowTitle)
+        windowWorkspace = try c.decodeIfPresent(Int.self, forKey: .windowWorkspace)
+        tabIndex = try c.decode(Int.self, forKey: .tabIndex)
+        tabTitle = try c.decodeIfPresent(String.self, forKey: .tabTitle)
+        splitPath = try c.decode([Int].self, forKey: .splitPath)
+        splitDirections = (try? c.decode([String].self, forKey: .splitDirections)) ?? []
+        shellPid = try c.decodeIfPresent(Int.self, forKey: .shellPid)
+        workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
     }
 }
 
 private struct LivePane {
     let path: [Int]
+    let directions: [String]
     let view: ExplorerSurfaceView
 
     init(record: LiveSurfaceRecord) {
         path = record.splitPath
+        directions = record.splitDirections
         view = ExplorerSurfaceView(
-            id: record.surfaceID,
+            id: record.stateID ?? record.surfaceID,
+            stateID: record.stateID,
             pwd: record.workingDirectory,
             title: record.tabTitle,
             foregroundPid: record.shellPid,
@@ -522,11 +574,20 @@ private struct LivePane {
     }
 
     func droppingFirstPathComponent() -> LivePane {
-        LivePane(path: Array(path.dropFirst()), view: view)
+        LivePane(
+            path: Array(path.dropFirst()),
+            directions: Array(directions.dropFirst()),
+            view: view
+        )
     }
 
-    private init(path: [Int], view: ExplorerSurfaceView) {
+    /// Direction ("horizontal" / "vertical") of the OUTERMOST split this
+    /// pane is reached through, or nil if this pane is the root view.
+    var outermostDirection: String? { directions.first }
+
+    private init(path: [Int], directions: [String], view: ExplorerSurfaceView) {
         self.path = path
+        self.directions = directions
         self.view = view
     }
 }

@@ -1,8 +1,8 @@
 import Foundation
 
 enum SessionExplorerSelection: Equatable {
-    case template(String)
-    case snapshot(String)
+    case state
+    case backup(String)
 }
 
 enum PaneCommandMode: String, CaseIterable, Identifiable {

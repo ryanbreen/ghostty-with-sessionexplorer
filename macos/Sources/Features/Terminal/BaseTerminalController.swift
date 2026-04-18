@@ -45,6 +45,20 @@ class BaseTerminalController: NSWindowController,
         didSet { surfaceTreeDidChange(from: oldValue, to: surfaceTree) }
     }
 
+    /// Stable identifier of the canonical state window this controller was
+    /// asserted from. Set by SessionRestorer (and inherited by sibling tab
+    /// controllers in the same group). Used by SurfaceListSnapshotter and
+    /// saveWindowState to match windows by identity instead of fragile
+    /// title heuristics — especially important when the window's "concept"
+    /// title (e.g. "games") differs from the focused tab's title.
+    var stateWindowID: String?
+
+    /// Stable identifier of the canonical state tab this controller was
+    /// asserted from. Each tab in a tab group is its own BaseTerminalController
+    /// instance with its own tabStateID. Used by save matching so tab
+    /// reordering / closing / adding doesn't lose per-tab state.
+    var stateTabID: String?
+
     /// This can be set to show/hide the command palette.
     @Published var commandPaletteIsShowing: Bool = false
 

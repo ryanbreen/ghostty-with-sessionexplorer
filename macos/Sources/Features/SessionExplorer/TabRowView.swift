@@ -12,49 +12,64 @@ struct TabRowView: View {
     let onMoveDown: (() -> Void)?
 
     @State private var selectedPanePathKey: String?
+    @State private var isExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-
-            VStack(alignment: .leading, spacing: 12) {
-                SplitTreeMiniMapView(
-                    node: tab.surfaceTree.root,
-                    selectedPanePathKey: selectedPanePathKey,
-                    onSelect: { path in
-                        selectedPanePathKey = path.sessionExplorerPathKey
-                    }
-                )
-                .frame(height: 110)
-
-                VStack(spacing: 0) {
-                    ForEach(Array(panes.enumerated()), id: \.offset) { index, pane in
-                        PaneRowView(
-                            positionLabel: pane.position,
-                            pane: binding(for: pane.path),
-                            paneDiff: paneDiff(at: index),
-                            isTemplate: isTemplate,
-                            canDelete: isTemplate && panes.count > 1,
-                            isSelected: selectedPanePathKey == pane.path.sessionExplorerPathKey,
-                            onSelect: {
-                                selectedPanePathKey = pane.path.sessionExplorerPathKey
-                            },
-                            onChange: onChange,
-                            onDelete: {
-                                tab.surfaceTree.removePane(at: pane.path)
-                                onChange()
-                            }
-                        )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isExpanded.toggle()
                     }
                 }
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 12) {
+                    SplitTreeMiniMapView(
+                        node: tab.surfaceTree.root,
+                        selectedPanePathKey: selectedPanePathKey,
+                        onSelect: { path in
+                            selectedPanePathKey = path.sessionExplorerPathKey
+                        }
+                    )
+                    .frame(height: 110)
+
+                    VStack(spacing: 0) {
+                        ForEach(Array(panes.enumerated()), id: \.offset) { index, pane in
+                            PaneRowView(
+                                positionLabel: pane.position,
+                                pane: binding(for: pane.path),
+                                paneDiff: paneDiff(at: index),
+                                isTemplate: isTemplate,
+                                canDelete: isTemplate && panes.count > 1,
+                                isSelected: selectedPanePathKey == pane.path.sessionExplorerPathKey,
+                                onSelect: {
+                                    selectedPanePathKey = pane.path.sessionExplorerPathKey
+                                },
+                                onChange: onChange,
+                                onDelete: {
+                                    tab.surfaceTree.removePane(at: pane.path)
+                                    onChange()
+                                }
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
         }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.explorerMuted)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 12)
+
             Text("\(index)")
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(.explorerMuted)

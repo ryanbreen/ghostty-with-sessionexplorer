@@ -26,7 +26,10 @@ enum TemplateCompiler {
     }
 
     static func serializedDocument(windows: [ExplorerWindow]) throws -> Data {
-        let normalizedWindows = windows.map(normalizeClaudeResumeOffsets(in:))
+        var normalizedWindows = windows.map(normalizeClaudeResumeOffsets(in:))
+        for index in normalizedWindows.indices {
+            _ = normalizedWindows[index].ensureAllStateIDs()
+        }
         let records = try normalizedWindows.map(makeWindowRecord)
         let document: [String: Any] = [
             "version": SessionDocument.currentVersion,
@@ -67,6 +70,10 @@ enum TemplateCompiler {
             ],
         ]
 
+        if let id = nonEmpty(tab.id) {
+            record["id"] = id
+        }
+
         if let title = nonEmpty(tab.title) {
             record["title"] = title
         }
@@ -99,6 +106,10 @@ enum TemplateCompiler {
 
     private static func encodeSurfaceView(_ view: ExplorerSurfaceView) throws -> [String: Any] {
         var record: [String: Any] = [:]
+
+        if let stateID = nonEmpty(view.stateID) {
+            record["stateID"] = stateID
+        }
 
         if let pwd = nonEmpty(view.pwd) {
             record["pwd"] = expandTilde(in: pwd)

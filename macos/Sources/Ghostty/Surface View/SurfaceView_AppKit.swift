@@ -103,6 +103,10 @@ extension Ghostty {
         // then the view is moved to a new window.
         var initialSize: NSSize?
 
+        // Stable identity used by Session Explorer state matching. This is
+        // Swift-side state only; libghostty does not need to know about it.
+        var stateID: String?
+
         // A content size received through sizeDidChange that may in some cases
         // be different from the frame size.
         private var contentSizeBacking: NSSize?
@@ -342,6 +346,13 @@ extension Ghostty {
 
             // Setup our surface. This will also initialize all the terminal IO.
             let surface_cfg = baseConfig ?? SurfaceConfiguration()
+            // Always assign a state ID so save/recapture flows can match this
+            // pane back to the canonical state by exact identity. If config
+            // doesn't supply one (e.g. a fresh pane the user opened, or a
+            // surface restored by macOS window restoration), generate one.
+            // Bootstrap matching against existing state.json runs separately
+            // and may overwrite this with a state-derived ID.
+            self.stateID = surface_cfg.stateID ?? UUID().uuidString.lowercased()
             let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
                 ghostty_surface_new(app, &surface_cfg_c)
             }
@@ -1709,6 +1720,7 @@ extension Ghostty {
             case title
             case isUserSetTitle
             // Session restore keys (decode-only)
+            case stateID
             case command
             case initialInput
             case environmentVariables
@@ -1736,6 +1748,7 @@ extension Ghostty {
 
             var config = Ghostty.SurfaceConfiguration()
             config.workingDirectory = try container.decodeIfPresent(String.self, forKey: .pwd)
+            config.stateID = try container.decodeIfPresent(String.self, forKey: .stateID)
 
             // Session restore fields
             config.command = try container.decodeIfPresent(String.self, forKey: .command)
@@ -1765,6 +1778,7 @@ extension Ghostty {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(pwd, forKey: .pwd)
             try container.encode(id.uuidString, forKey: .uuid)
+            try container.encodeIfPresent(stateID, forKey: .stateID)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
         }

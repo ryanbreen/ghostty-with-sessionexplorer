@@ -35,12 +35,105 @@ extension SessionTemplate {
         ExplorerSnapshot(windows: windows)
     }
 
+    @discardableResult
+    mutating func ensureAllStateIDs() -> Bool {
+        var changed = false
+        for index in windows.indices {
+            changed = windows[index].ensureAllStateIDs() || changed
+        }
+        return changed
+    }
+
+    @discardableResult
+    mutating func ensurePaneStateIDs() -> Bool {
+        ensureAllStateIDs()
+    }
+
     static func promote(snapshot: ExplorerSnapshot, name: String) -> SessionTemplate {
-        SessionTemplate(
+        var template = SessionTemplate(
             id: UUID().uuidString.lowercased(),
             name: name,
             windows: snapshot.windows.map(\.templateSanitized)
         )
+        _ = template.ensureAllStateIDs()
+        return template
+    }
+}
+
+extension ExplorerWindow {
+    @discardableResult
+    mutating func ensureAllStateIDs() -> Bool {
+        var changed = false
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedID.isEmpty {
+            id = UUID().uuidString.lowercased()
+            changed = true
+        } else if trimmedID != id {
+            id = trimmedID
+            changed = true
+        }
+        for index in tabs.indices {
+            changed = tabs[index].ensureAllStateIDs() || changed
+        }
+        return changed
+    }
+
+    @discardableResult
+    mutating func ensurePaneStateIDs() -> Bool {
+        ensureAllStateIDs()
+    }
+}
+
+extension ExplorerTab {
+    @discardableResult
+    mutating func ensureAllStateIDs() -> Bool {
+        var changed = false
+        if let trimmedID = id?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmedID.isEmpty {
+            if id != trimmedID {
+                changed = true
+            }
+            id = trimmedID
+        } else {
+            id = UUID().uuidString.lowercased()
+            changed = true
+        }
+        changed = surfaceTree.ensurePaneStateIDs() || changed
+        return changed
+    }
+
+    @discardableResult
+    mutating func ensurePaneStateIDs() -> Bool {
+        ensureAllStateIDs()
+    }
+}
+
+extension ExplorerSurfaceTree {
+    @discardableResult
+    mutating func ensurePaneStateIDs() -> Bool {
+        root.ensurePaneStateIDs()
+    }
+}
+
+extension ExplorerSurfaceNode {
+    @discardableResult
+    mutating func ensurePaneStateIDs() -> Bool {
+        switch self {
+        case .view(var view):
+            if let stateID = view.stateID?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !stateID.isEmpty {
+                return false
+            }
+            view.stateID = UUID().uuidString.lowercased()
+            self = .view(view)
+            return true
+
+        case .split(var split):
+            let changedLeft = split.left.ensurePaneStateIDs()
+            let changedRight = split.right.ensurePaneStateIDs()
+            self = .split(split)
+            return changedLeft || changedRight
+        }
     }
 }
 
@@ -84,6 +177,7 @@ extension ExplorerSurfaceNode {
 extension ExplorerSurfaceView {
     var templateSanitized: ExplorerSurfaceView {
         var copy = self
+        copy.id = nil
         copy.foregroundPid = nil
         copy.foregroundProcess = nil
         copy.processExited = nil

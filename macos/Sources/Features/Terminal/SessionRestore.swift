@@ -28,6 +28,7 @@ struct SessionWindow: Decodable {
 }
 
 struct SessionTab: Decodable {
+    let id: String?
     let title: String?
     let surfaceTree: SessionSurfaceTree
 }
@@ -124,8 +125,8 @@ enum SessionRestorer {
         //   window i opens at:          windowInterval * i
         //   tab j of window i opens at: windowInterval * i  +  tabInterval * j
         //   yabai placement at:         windowInterval * i  +  1.5
-        let windowInterval = 4.0  // seconds between window creations
-        let tabInterval    = 1.5  // seconds between tab additions within a window
+        let windowInterval = 6.0  // seconds between window creations
+        let tabInterval    = 3.0  // seconds between tab additions within a window
 
         let windowMap: [String: String] = [:]
 
@@ -136,6 +137,7 @@ enum SessionRestorer {
             let windowDeadline = DispatchTime.now() + windowInterval * Double(windowIndex)
 
             if let match = existing[windowTitle] {
+                match.primaryController.stateWindowID = sessionWindow.id
                 // Window already open — stagger any missing tabs from where we are now.
                 let existingTabTitles = match.tabTitles
                 var tabOffset = 0
@@ -164,6 +166,12 @@ enum SessionRestorer {
                     let firstTab = sessionWindow.tabs[0]
                     let tree = SplitTree<Ghostty.SurfaceView>(root: firstTab.surfaceTree.root, zoomed: nil)
                     let controller = TerminalController(ghostty, withSurfaceTree: tree)
+                    // Stamp the canonical state window ID on this controller
+                    // so save flows match by identity, not by the focused
+                    // tab's title (which may differ from the "window
+                    // concept" name like "games" vs "breen-switch").
+                    controller.stateWindowID = sessionWindow.id
+                    controller.stateTabID = firstTab.id
                     controller.showWindow(nil)
 
                     if let title = firstTab.title ?? sessionWindow.title {
@@ -287,6 +295,10 @@ enum SessionRestorer {
     ) {
         let tabTree = SplitTree<Ghostty.SurfaceView>(root: tab.surfaceTree.root, zoomed: nil)
         let tabController = TerminalController(ghostty, withSurfaceTree: tabTree)
+        // Inherit the state window ID from the primary so all tabs in the
+        // group share one identity for save matching.
+        tabController.stateWindowID = primaryController.stateWindowID
+        tabController.stateTabID = tab.id
 
         if let title = tab.title {
             tabController.titleOverride = title

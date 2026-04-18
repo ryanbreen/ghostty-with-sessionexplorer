@@ -82,6 +82,13 @@ struct PaneRowView: View {
                     .foregroundColor(Color.explorerProcess.opacity(0.85))
             }
 
+            if let stateIDPrefix {
+                Text(stateIDPrefix)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.explorerMuted.opacity(0.7))
+                    .help(pane.stateID ?? "")
+            }
+
             if let status = paneDiff?.status {
                 SessionExplorerStatusDot(status: status, size: 6)
             }
@@ -196,6 +203,14 @@ struct PaneRowView: View {
 
     private var startupSummary: String {
         pane.command?.summary ?? paneDiff?.startupCommand ?? ""
+    }
+
+    /// First 8 characters of this pane's persistent state ID, shown next to
+    /// the status dot so we can visually confirm every pane has stable
+    /// identity baked in. Hover for the full UUID.
+    private var stateIDPrefix: String? {
+        guard let id = pane.stateID, !id.isEmpty else { return nil }
+        return String(id.prefix(8))
     }
 
     private var processName: String {

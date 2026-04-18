@@ -25,6 +25,8 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuReloadConfig: NSMenuItem?
     @IBOutlet private var menuSaveSession: NSMenuItem?
     @IBOutlet private var menuRestoreSession: NSMenuItem?
+    @IBOutlet private var menuSaveWindowState: NSMenuItem?
+    @IBOutlet private var menuAssertWindowState: NSMenuItem?
     @IBOutlet private var menuSecureInput: NSMenuItem?
     @IBOutlet private var menuQuit: NSMenuItem?
 
@@ -231,6 +233,31 @@ class AppDelegate: NSObject,
 
         // Session snapshots are manual-only; the periodic auto-save timer is intentionally disabled.
 
+        // Eagerly load the canonical Ghostty State on launch so the
+        // stateID auto-generation runs even before the user opens the
+        // Session Explorer. Without this, asserting a window from the menu
+        // can read stale legacy state without per-pane stateIDs.
+        do {
+            let store = StateStore()
+            try store.loadState()
+        } catch {
+            Ghostty.logger.warning("Initial StateStore load failed: \(String(describing: error))")
+        }
+
+        // macOS may restore terminal windows independently from our state
+        // bootstrap. Those surfaces come up with freshly-generated stateIDs
+        // that don't match anything in state.json, so the first save would
+        // fall through to fragile path/pwd matching and lose commands.
+        // Schedule a bootstrap pass after window restoration completes:
+        // walk every live terminal window, find a state window with the
+        // same title, and stamp the state's per-pane stateIDs onto the
+        // matching live SurfaceViews so future saves match by ID.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.bootstrapStateIDsForRestoredWindows()
+            }
+        }
+
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
 
@@ -327,7 +354,9 @@ class AppDelegate: NSObject,
 
         // Setup our menu
         setupMenuImages()
+        setupWindowStateMenuItems()
         setupSessionExplorerMenuItem()
+        migrateGhosttyStateIfNeeded()
 
         // Setup signal handlers
         setupSignals()
@@ -1022,6 +1051,119 @@ class AppDelegate: NSObject,
         }
     }
 
+    @MainActor
+    @IBAction func saveWindowState(_ sender: Any?) {
+        do {
+            let liveWindow = try focusedLiveStateWindow()
+            let store = StateStore()
+            try store.loadState()
+
+            // Start from the existing state, or create a brand-new one if no
+            // state.json exists yet.
+            var template = store.state?.template ?? SessionTemplate(
+                id: UUID().uuidString.lowercased(),
+                name: "Ghostty State",
+                windows: []
+            )
+
+            let liveWindowStateID = normalizedStateIdentifier(liveWindow.id)
+            let idMatchIndex = liveWindowStateID.flatMap { id in
+                template.windows.firstIndex {
+                    normalizedStateIdentifier($0.id) == id
+                }
+            }
+            let titleMatchIndex = template.windows.firstIndex {
+                $0.normalizedTitle == liveWindow.normalizedTitle
+            }
+            let matchingIndex = idMatchIndex ?? titleMatchIndex
+            let matchingState = matchingIndex.map { template.windows[$0] }
+
+            // Diagnostic: log live + state pane stateIDs side by side so we
+            // can see why command preservation is failing.
+            let liveTabs = liveWindow.tabs.enumerated().map { (idx, tab) in
+                let panes = tab.surfaceTree.root.flattenedPanes()
+                return "tab\(idx): " + panes.map { p in
+                    let sid = p.view.stateID?.prefix(8) ?? "nil"
+                    return String(sid)
+                }.joined(separator: ",")
+            }.joined(separator: " | ")
+            let stateTabs = (matchingState?.tabs ?? []).enumerated().map { (idx, tab) in
+                let panes = tab.surfaceTree.root.flattenedPanes()
+                return "tab\(idx): " + panes.map { p in
+                    let sid = p.view.stateID?.prefix(8) ?? "nil"
+                    let cmd = p.view.command != nil ? "+" : "-"
+                    return "\(sid)\(cmd)"
+                }.joined(separator: ",")
+            }.joined(separator: " | ")
+            let stateTitles = template.windows.map {
+                "\(String($0.id.prefix(8))):\($0.title ?? "<no-title>")"
+            }.joined(separator: ",")
+            explorerDebugLog("saveWindowState diag: liveWindowID='\(String(liveWindow.id.prefix(8)))' titleMatch=\(titleMatchIndex != nil ? "yes" : "no") idMatch=\(idMatchIndex != nil ? "yes" : "no") liveTitle='\(liveWindow.title ?? "<nil>")' liveNorm='\(liveWindow.normalizedTitle)' stateTitles=[\(stateTitles)] live=[\(liveTabs)] state=[\(stateTabs)]")
+
+            if let index = matchingIndex {
+                // Update the existing matching window, preserving any
+                // configured startup commands across panes that still exist.
+                template.windows[index] = StateWindowRecapturer.recapturedWindow(
+                    from: liveWindow,
+                    preservingCommandsFrom: template.windows[index]
+                )
+            } else {
+                // No matching window — add this one as a new entry. Strip
+                // volatile fields (PIDs / foreground process names) so the
+                // saved state looks like a template, not a snapshot.
+                var newWindow = liveWindow.templateSanitized
+                if isTransientSnapshotWindowID(newWindow.id) {
+                    newWindow.id = ""
+                }
+                template.windows.append(newWindow)
+            }
+
+            _ = try store.save(template: template)
+        } catch {
+            presentWindowStateError(title: "Save Window State Failed", error: error)
+        }
+    }
+
+    @MainActor
+    @IBAction func assertWindowState(_ sender: Any?) {
+        do {
+            let liveWindow = try focusedLiveStateWindow()
+            let store = StateStore()
+            try store.loadState()
+
+            guard let template = store.state?.template else {
+                throw WindowStateActionError.noState
+            }
+
+            guard let stateWindow = template.windows.first(where: {
+                $0.normalizedTitle == liveWindow.normalizedTitle
+            }) else {
+                throw WindowStateActionError.noMatchingWindow(liveWindow.displayTitle)
+            }
+
+            // Close the existing focused window (and its tab group) before
+            // asserting the new one — having two copies of a window with the
+            // same Claude sessions running side-by-side is never what we want.
+            if let controller = NSApp.keyWindow?.windowController as? BaseTerminalController,
+               let focusedWindow = controller.window {
+                if let tabGroup = focusedWindow.tabGroup {
+                    for tabWindow in tabGroup.windows {
+                        tabWindow.close()
+                    }
+                } else {
+                    focusedWindow.close()
+                }
+            }
+
+            let assertController = SessionAssertController(ghostty: ghostty)
+            Task { @MainActor in
+                await assertController.assertTemplateWindow(stateWindow)
+            }
+        } catch {
+            presentWindowStateError(title: "Assert Window State Failed", error: error)
+        }
+    }
+
     @IBAction func openAgentLayout(_ sender: Any?) {
         guard let controller = NSApp.keyWindow?.windowController as? BaseTerminalController else { return }
         AgentLayout.openForFocused(controller: controller, ghostty: ghostty)
@@ -1066,6 +1208,155 @@ class AppDelegate: NSObject,
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }
+    }
+
+    @MainActor
+    /// On launch (after macOS window restoration), walk every live terminal
+    /// window and try to stamp per-pane stateIDs from the matching state
+    /// window onto the live SurfaceViews. This makes save-after-restore work
+    /// without losing command associations even though macOS-restored
+    /// surfaces never went through our SessionRestorer.
+    private func bootstrapStateIDsForRestoredWindows() {
+        let store = StateStore()
+        do {
+            try store.loadState()
+        } catch {
+            Ghostty.logger.warning("bootstrapStateIDs: load failed: \(String(describing: error))")
+            return
+        }
+        guard let stateTemplate = store.state?.template else { return }
+
+        // Build a title → state window lookup so we don't repeat searches.
+        var stateWindowsByTitle: [String: ExplorerWindow] = [:]
+        for window in stateTemplate.windows {
+            stateWindowsByTitle[window.normalizedTitle] = window
+        }
+        guard !stateWindowsByTitle.isEmpty else { return }
+
+        // Collect each tab group's primary controller exactly once.
+        var seenControllers = Set<ObjectIdentifier>()
+        var primaryControllers: [BaseTerminalController] = []
+        for nsWindow in NSApp.windows {
+            guard let controller = nsWindow.windowController as? BaseTerminalController else {
+                continue
+            }
+            let primary: BaseTerminalController
+            if let tabGroup = nsWindow.tabGroup,
+               let first = tabGroup.windows
+                   .compactMap({ $0.windowController as? BaseTerminalController })
+                   .first {
+                primary = first
+            } else {
+                primary = controller
+            }
+            if seenControllers.insert(ObjectIdentifier(primary)).inserted {
+                primaryControllers.append(primary)
+            }
+        }
+
+        var bootstrapped = 0
+        for controller in primaryControllers {
+            guard let window = controller.window else { continue }
+            let liveTitle = (controller.titleOverride ?? window.title)
+                .normalizedForMatching
+            guard let stateWindow = stateWindowsByTitle[liveTitle] else { continue }
+
+            // Snapshot this single window so we know what live panes exist.
+            let json = SurfaceListSnapshotter.snapshotWindow(controller: controller)
+            guard let liveWindow = (try? ExplorerSnapshot.fromSurfaceListSnapshot(json))?
+                .windows.first else { continue }
+
+            // For each live tab, walk the corresponding state tab and set
+            // stateIDs on the live SurfaceViews by path/pwd matching.
+            let tabControllers: [BaseTerminalController]
+            if let tabGroup = window.tabGroup {
+                tabControllers = tabGroup.windows
+                    .compactMap { $0.windowController as? BaseTerminalController }
+            } else {
+                tabControllers = [controller]
+            }
+
+            for (tabIndex, tabController) in tabControllers.enumerated() {
+                guard tabIndex < stateWindow.tabs.count,
+                      tabIndex < liveWindow.tabs.count else { continue }
+                let stateTab = stateWindow.tabs[tabIndex]
+                let liveTab = liveWindow.tabs[tabIndex]
+                tabController.stateWindowID = stateWindow.id
+                tabController.stateTabID = stateTab.id
+                let statePanes = stateTab.surfaceTree.root.flattenedPanes()
+                let livePanes = liveTab.surfaceTree.root.flattenedPanes()
+                guard let root = tabController.surfaceTree.root else { continue }
+                let liveLeaves = root.leaves()
+
+                var consumedIndices = Set<Int>()
+                for (paneIndex, livePane) in livePanes.enumerated() {
+                    guard paneIndex < liveLeaves.count else { continue }
+                    let liveSurface = liveLeaves[paneIndex]
+
+                    // Match by path first, then by pwd. State pane consumed
+                    // at most once.
+                    var matched: Int?
+                    for i in statePanes.indices {
+                        guard !consumedIndices.contains(i) else { continue }
+                        if statePanes[i].path == livePane.path { matched = i; break }
+                    }
+                    if matched == nil, let pwd = livePane.view.pwd?.normalizedForMatching {
+                        for i in statePanes.indices {
+                            guard !consumedIndices.contains(i) else { continue }
+                            if statePanes[i].view.pwd?.normalizedForMatching == pwd {
+                                matched = i; break
+                            }
+                        }
+                    }
+                    guard let stateIndex = matched,
+                          let id = statePanes[stateIndex].view.stateID,
+                          !id.isEmpty else { continue }
+                    consumedIndices.insert(stateIndex)
+                    liveSurface.stateID = id
+                    bootstrapped += 1
+                }
+            }
+        }
+
+        if bootstrapped > 0 {
+            Ghostty.logger.info("bootstrapStateIDs: stamped \(bootstrapped) live pane stateIDs from state")
+        }
+    }
+
+    @MainActor
+    private func focusedLiveStateWindow() throws -> ExplorerWindow {
+        guard let controller = NSApp.keyWindow?.windowController as? BaseTerminalController else {
+            throw WindowStateActionError.noFocusedTerminalWindow
+        }
+
+        let json = SurfaceListSnapshotter.snapshotWindow(controller: controller)
+        let snapshot = try ExplorerSnapshot.fromSurfaceListSnapshot(json)
+        guard let window = snapshot.windows.first else {
+            throw WindowStateActionError.noFocusedTerminalWindow
+        }
+        return window
+    }
+
+    private func normalizedStateIdentifier(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed.lowercased()
+    }
+
+    private func isTransientSnapshotWindowID(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && Int(trimmed) != nil
+    }
+
+    @MainActor
+    private func presentWindowStateError(title: String, error: Error) {
+        Ghostty.logger.error("\(title): \(error)")
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     /// Snapshot the current session and persist it via SessionStorage.
@@ -1251,6 +1542,8 @@ extension AppDelegate {
         self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
         self.menuSaveSession?.setImageIfDesired(systemSymbolName: "tray.and.arrow.down.fill")
         self.menuRestoreSession?.setImageIfDesired(systemSymbolName: "tray.and.arrow.up.fill")
+        self.menuSaveWindowState?.setImageIfDesired(systemSymbolName: "rectangle.and.arrow.down.right.and.arrow.up.left")
+        self.menuAssertWindowState?.setImageIfDesired(systemSymbolName: "rectangle.badge.checkmark")
         self.menuSecureInput?.setImageIfDesired(systemSymbolName: "lock.display")
         self.menuNewWindow?.setImageIfDesired(systemSymbolName: "macwindow.badge.plus")
         self.menuNewTab?.setImageIfDesired(systemSymbolName: "macwindow")
@@ -1288,13 +1581,31 @@ extension AppDelegate {
         self.menuSessionExplorer?.setImageIfDesired(systemSymbolName: "rectangle.split.3x1")
     }
 
+    private func setupWindowStateMenuItems() {
+        menuSaveSession?.isHidden = true
+        menuSaveSession?.isEnabled = false
+        menuRestoreSession?.isHidden = true
+        menuRestoreSession?.isEnabled = false
+
+        menuSaveWindowState?.target = self
+        menuAssertWindowState?.target = self
+    }
+
+    private func migrateGhosttyStateIfNeeded() {
+        do {
+            try StateStore.migrateTemplateIfNeeded()
+        } catch {
+            Ghostty.logger.error("state migration failed: \(error)")
+        }
+    }
+
     private func setupSessionExplorerMenuItem() {
         guard menuSessionExplorer == nil else { return }
         guard let viewMenuItem = NSApp.mainMenu?.item(withTitle: "View"),
               let viewMenu = viewMenuItem.submenu else { return }
 
         let item = NSMenuItem(
-            title: "Session Explorer",
+            title: "Ghostty State...",
             action: #selector(showSessionExplorer(_:)),
             keyEquivalent: "E"
         )
@@ -1454,6 +1765,10 @@ extension AppDelegate: NSMenuItemValidation {
             // terminal window (not quick terminal).
             return NSApp.keyWindow is TerminalWindow
 
+        case #selector(saveWindowState(_:)),
+            #selector(assertWindowState(_:)):
+            return NSApp.keyWindow?.windowController is BaseTerminalController
+
         case #selector(undo(_:)):
             if undoManager.canUndo {
                 item.title = "Undo \(undoManager.undoActionName)"
@@ -1472,6 +1787,23 @@ extension AppDelegate: NSMenuItemValidation {
 
         default:
             return true
+        }
+    }
+}
+
+private enum WindowStateActionError: LocalizedError {
+    case noFocusedTerminalWindow
+    case noState
+    case noMatchingWindow(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noFocusedTerminalWindow:
+            return "Focus a Ghostty terminal window first."
+        case .noState:
+            return "No ~/.config/ghostty/state.json file exists yet."
+        case .noMatchingWindow(let title):
+            return "No window in state.json matches the focused window title: \(title)"
         }
     }
 }
