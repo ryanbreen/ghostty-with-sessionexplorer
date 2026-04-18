@@ -11,6 +11,8 @@ zig-cache/
 .zig-cache/
 .zig-global-cache/
 zig-out/
+zig-pkg/
+default.profraw
 build-cmake/
 CMakeCache.txt
 CMakeFiles/
