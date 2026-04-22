@@ -1798,11 +1798,6 @@ pub const CAPI = struct {
         };
     }
 
-    /// Returns the PID of the foreground process for the surface PTY.
-    export fn ghostty_surface_foreground_pid(surface: *Surface) u64 {
-        return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
-    }
-
     /// Returns the PTY name for the surface. The returned string must be
     /// freed by the caller via ghostty_string_free.
     export fn ghostty_surface_tty_name(surface: *Surface) String {
