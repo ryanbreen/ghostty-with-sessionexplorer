@@ -111,6 +111,15 @@ enum SessionRestorer {
             throw SessionRestoreError.noWindows
         }
 
+        AutoStateSaver.shared.beginSuppression(reason: "session-restore")
+        var latestScheduledDelay: TimeInterval = 0
+        defer {
+            AutoStateSaver.shared.endSuppression(
+                after: latestScheduledDelay + 5,
+                reason: "session-restore"
+            )
+        }
+
         let windowsToRestore = session.windows
 
         // Snapshot existing windows keyed by title.
@@ -145,6 +154,10 @@ enum SessionRestorer {
                     let tabTitle = tab.title ?? windowTitle
                     guard !existingTabTitles.contains(tabTitle) else { continue }
                     tabOffset += 1
+                    latestScheduledDelay = max(
+                        latestScheduledDelay,
+                        windowInterval * Double(windowIndex) + tabInterval * Double(tabOffset)
+                    )
                     let tabDeadline = windowDeadline + tabInterval * Double(tabOffset)
                     let controller = match.primaryController
                     DispatchQueue.main.asyncAfter(deadline: tabDeadline) {
@@ -157,6 +170,11 @@ enum SessionRestorer {
             } else {
                 guard !sessionWindow.tabs.isEmpty else { continue }
 
+                let windowDelay = windowInterval * Double(windowIndex)
+                latestScheduledDelay = max(
+                    latestScheduledDelay,
+                    windowDelay + tabInterval * Double(max(0, sessionWindow.tabs.count - 1))
+                )
                 DispatchQueue.main.asyncAfter(deadline: windowDeadline) {
                     // Re-snapshot yabai IDs right before creating this window.
                     let idsBeforeCreate = Set(

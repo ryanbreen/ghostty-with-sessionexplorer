@@ -36,6 +36,9 @@ final class SessionAssertController {
     }
 
     func assertWindow(_ window: ExplorerWindow) async {
+        AutoStateSaver.shared.beginSuppression(reason: "assert-window")
+        defer { AutoStateSaver.shared.endSuppression(after: 5, reason: "assert-window") }
+
         explorerDebugLog(
             "assertWindow called: window_id=\(window.id) title=\(window.displayTitle) tabs=\(window.tabs.count)"
         )
@@ -70,6 +73,9 @@ final class SessionAssertController {
     }
 
     func assertTemplateWindow(_ window: ExplorerWindow) async {
+        AutoStateSaver.shared.beginSuppression(reason: "assert-template-window")
+        defer { AutoStateSaver.shared.endSuppression(after: 5, reason: "assert-template-window") }
+
         explorerDebugLog(
             "assertTemplateWindow called: window_id=\(window.id) title=\(window.displayTitle) tabs=\(window.tabs.count)"
         )
@@ -95,6 +101,9 @@ final class SessionAssertController {
     }
 
     func assertTemplate(_ template: SessionTemplate) async {
+        AutoStateSaver.shared.beginSuppression(reason: "assert-template")
+        defer { AutoStateSaver.shared.endSuppression(after: 5, reason: "assert-template") }
+
         explorerDebugLog(
             "assertTemplate called: template_id=\(template.id) name=\(template.name) windows=\(template.windows.count)"
         )

@@ -279,6 +279,24 @@ class AppDelegate: NSObject,
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(terminalControllerCreated(_:)),
+            name: .terminalControllerCreated,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(terminalWindowWillClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(terminalWindowDidMove(_:)),
+            name: NSWindow.didMoveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(quickTerminalDidChangeVisibility),
             name: .quickTerminalDidChangeVisibility,
             object: nil
@@ -692,6 +710,36 @@ class AppDelegate: NSObject,
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         syncFloatOnTopMenu(notification.object as? NSWindow)
+    }
+
+    @MainActor
+    @objc private func terminalControllerCreated(_ notification: Notification) {
+        guard notification.object is TerminalController else { return }
+        AutoStateSaver.shared.scheduleAutoSave(reason: "terminal-controller-created")
+    }
+
+    @MainActor
+    @objc private func terminalWindowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window.windowController is BaseTerminalController else {
+            return
+        }
+
+        let reason = (window.tabGroup?.windows.count ?? 1) > 1
+            ? "tab-removed"
+            : "window-closed"
+        AutoStateSaver.shared.scheduleAutoSave(reason: reason)
+    }
+
+    @MainActor
+    @objc private func terminalWindowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window.windowController is BaseTerminalController,
+              (window.tabGroup?.windows.count ?? 0) > 1 else {
+            return
+        }
+
+        AutoStateSaver.shared.scheduleAutoSave(reason: "window-moved-or-tab-reordered")
     }
 
     @objc private func quickTerminalDidChangeVisibility(_ notification: Notification) {
@@ -1126,6 +1174,14 @@ class AppDelegate: NSObject,
 
     @MainActor
     @IBAction func assertWindowState(_ sender: Any?) {
+        AutoStateSaver.shared.beginSuppression(reason: "assert-window-state")
+        var endSuppressionInDefer = true
+        defer {
+            if endSuppressionInDefer {
+                AutoStateSaver.shared.endSuppression(after: 5, reason: "assert-window-state")
+            }
+        }
+
         do {
             let liveWindow = try focusedLiveStateWindow()
             let store = StateStore()
@@ -1156,7 +1212,11 @@ class AppDelegate: NSObject,
             }
 
             let assertController = SessionAssertController(ghostty: ghostty)
+            endSuppressionInDefer = false
             Task { @MainActor in
+                defer {
+                    AutoStateSaver.shared.endSuppression(after: 5, reason: "assert-window-state")
+                }
                 await assertController.assertTemplateWindow(stateWindow)
             }
         } catch {

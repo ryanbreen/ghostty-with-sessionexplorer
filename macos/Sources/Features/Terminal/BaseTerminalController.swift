@@ -302,6 +302,12 @@ class BaseTerminalController: NSWindowController,
     ///
     /// Subclasses should call super first.
     func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
+        let oldCount = from.root?.leaves().count ?? 0
+        let newCount = to.root?.leaves().count ?? 0
+        if oldCount != newCount {
+            AutoStateSaver.shared.scheduleAutoSave(reason: "pane-count-changed (\(oldCount)->\(newCount))")
+        }
+
         // If our surface tree becomes empty then we have no focused surface.
         if to.isEmpty {
             focusedSurface = nil

@@ -226,7 +226,9 @@ struct SessionExplorerView: View {
         )
 
         do {
-            _ = try stateStore.save(template: template)
+            _ = try AutoStateSaver.shared.withSuppression(reason: "recapture") {
+                try stateStore.save(template: template)
+            }
             selection = .state
             refreshDiff()
         } catch {

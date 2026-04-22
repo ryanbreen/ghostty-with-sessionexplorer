@@ -133,6 +133,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             name: .ghosttyCloseWindow,
             object: nil
         )
+
+        center.post(name: .terminalControllerCreated, object: self)
     }
 
     required init?(coder: NSCoder) {
@@ -596,6 +598,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard tabWindowsHash != v else { return }
         tabWindowsHash = v
         self.relabelTabs()
+        AutoStateSaver.shared.scheduleAutoSave(reason: "tab-reordered")
     }
 
     override func syncAppearance() {
@@ -1461,6 +1464,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 DispatchQueue.main.async {
                     selectedWindow.makeKey()
                 }
+                AutoStateSaver.shared.scheduleAutoSave(reason: "tab-reordered")
 
                 return
             }
@@ -1478,6 +1482,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         selectedWindow.makeKey()
 
         NSAnimationContext.endGrouping()
+        AutoStateSaver.shared.scheduleAutoSave(reason: "tab-reordered")
     }
 
     @objc private func onGotoTab(notification: SwiftUI.Notification) {
