@@ -415,14 +415,12 @@ class AppDelegate: NSObject,
         if !applicationHasBecomeActive {
             applicationHasBecomeActive = true
 
-            // Let's launch our first window. We only do this if we have no other windows. It
-            // is possible to have other windows in a few scenarios:
-            //   - if we're opening a URL since `application(_:openFile:)` is called before this.
-            //   - if we're restoring from persisted state
-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
-                undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
-                undoManager.enableUndoRegistration()
+            // Show the Session Explorer instead of opening a default terminal window.
+            // The explorer is the canonical entry point: the first thing the user
+            // should see is the window/tab/pane manager, not a stray terminal that
+            // would immediately auto-save over the saved layout.
+            if TerminalController.all.isEmpty {
+                showSessionExplorer(nil)
             }
         }
     }

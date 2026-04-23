@@ -182,7 +182,7 @@ enum SessionRestorer {
                     )
 
                     let firstTab = sessionWindow.tabs[0]
-                    let tree = SplitTree<Ghostty.SurfaceView>(root: firstTab.surfaceTree.root, zoomed: nil)
+                    let tree = SplitTree<Ghostty.SurfaceView>(root: firstTab.surfaceTree.root, zoomed: nil).equalized()
                     let controller = TerminalController(ghostty, withSurfaceTree: tree)
                     // Stamp the canonical state window ID on this controller
                     // so save flows match by identity, not by the focused
@@ -311,7 +311,7 @@ enum SessionRestorer {
         to primaryController: BaseTerminalController,
         ghostty: Ghostty.App
     ) {
-        let tabTree = SplitTree<Ghostty.SurfaceView>(root: tab.surfaceTree.root, zoomed: nil)
+        let tabTree = SplitTree<Ghostty.SurfaceView>(root: tab.surfaceTree.root, zoomed: nil).equalized()
         let tabController = TerminalController(ghostty, withSurfaceTree: tabTree)
         // Inherit the state window ID from the primary so all tabs in the
         // group share one identity for save matching.
