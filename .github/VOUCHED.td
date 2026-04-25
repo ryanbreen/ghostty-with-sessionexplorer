@@ -19,15 +19,20 @@
 # discussion by the author. Maintainers can denounce users by commenting
 # "!denounce" or "!denounce [username]" on a discussion.
 00-kat
+007hacky007
 04cb
 0xdvc
 aalhendi
+aaron-ang
 abdurrahmanski
 abudvytis
 adrum
 aindriu80
+ajiblock
+akimiojr
 alaasdk
 alanmoyano
+alaviss
 alexfeijoo44
 alexjuca
 alosarjos
@@ -39,6 +44,7 @@ anthonyzhoon
 atomk
 balazs-szucs
 barutsrb
+bch
 bennettp123
 benodiwal
 bernsno
@@ -69,7 +75,9 @@ deblasis
 dervedro
 devsunb
 diaaeddin
+dkinzler
 dmehala
+dobbylee
 doprz
 douglance
 douglas
@@ -78,6 +86,7 @@ drepper
 dzhlobo
 ekaterinepapava
 elias8
+enzowilliam
 ephemera
 eriksremess
 faukah
@@ -113,6 +122,7 @@ jcollie
 jesusvazquez
 jguthmiller
 jmcgover
+jmr
 johnslavik
 jordandm
 josephmart
@@ -129,11 +139,13 @@ kierancanter
 kirwiisp
 kjvdven
 kloneets
+knu
 -kody-w
 koranir
 kristina8888
 kristofersoler
 laxystem
+lebdron
 liby
 linustalacko
 lonsagisawa
@@ -160,6 +172,7 @@ mitchellh
 miupa
 molechowski
 moonmao42
+mpatankar6
 mrconnorkenway
 mrmage
 mtak
@@ -170,6 +183,7 @@ nicholas-ochoa
 nicosuave
 nmggithub
 noib3
+nouritsu
 nwehg
 ocean6954
 oshdubh
@@ -193,6 +207,8 @@ qwerasd205
 reo101
 rgehan
 rhodes-b
+rightaditya
+rjwittams
 rmengelbrecht
 rmunn
 rockorager
@@ -200,12 +216,14 @@ rpfaeffle
 sandydoo
 secrus
 seruman
+seyoungjeong
 silveirapf
 slsrepo
 sunshine-syz
 tbrundige
 tdgroot
 tdslot
+thoutbeckers
 ticclick
 tnagatomi
 trag1c
@@ -218,9 +236,11 @@ uzaaft
 vaughanandrews
 viruslobster
 vlsi
+voidnv
 wyounas
 yabbal
 yamshta
 ydah
 zenyr
 zeshi09
+zubb
