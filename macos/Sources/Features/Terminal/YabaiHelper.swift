@@ -36,11 +36,42 @@ enum YabaiHelper {
     // MARK: - Queries
 
     /// Returns all windows tracked by yabai.
+    ///
+    /// Cached for `cacheTTL` seconds because session-snapshot work calls this
+    /// once per Ghostty window in tight succession on the main thread, and
+    /// each uncached call spawns a yabai subprocess and blocks on
+    /// waitUntilExit. With ~30 tabs that's a 100ms+ main-thread stall every
+    /// 2-second refresh tick. The cache collapses a refresh's N calls into 1.
     static func queryWindows() -> [YabaiWindow] {
+        cacheLock.lock()
+        let now = Date()
+        if let entry = cachedWindows, now.timeIntervalSince(entry.timestamp) < cacheTTL {
+            cacheLock.unlock()
+            return entry.windows
+        }
+        cacheLock.unlock()
+
         guard let path = executablePath,
               let data = run(path, args: ["-m", "query", "--windows"]) else { return [] }
-        return (try? JSONDecoder().decode([YabaiWindow].self, from: data)) ?? []
+        let windows = (try? JSONDecoder().decode([YabaiWindow].self, from: data)) ?? []
+
+        cacheLock.lock()
+        cachedWindows = (windows: windows, timestamp: Date())
+        cacheLock.unlock()
+        return windows
     }
+
+    /// Drop any cached yabai window list. Call after a yabai mutation
+    /// (moveWindow / focusSpace) so the next query reflects the new state.
+    static func invalidateWindowCache() {
+        cacheLock.lock()
+        cachedWindows = nil
+        cacheLock.unlock()
+    }
+
+    private static let cacheTTL: TimeInterval = 1.0
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedWindows: (windows: [YabaiWindow], timestamp: Date)?
 
     /// Returns the yabai space index for the given NSWindow.
     static func space(for nsWindow: NSWindow) -> Int? {
@@ -62,14 +93,18 @@ enum YabaiHelper {
     @discardableResult
     static func moveWindow(id: Int, toSpace space: Int) -> Bool {
         guard let path = executablePath else { return false }
-        return run(path, args: ["-m", "window", "\(id)", "--space", "\(space)"]) != nil
+        let ok = run(path, args: ["-m", "window", "\(id)", "--space", "\(space)"]) != nil
+        invalidateWindowCache()
+        return ok
     }
 
     /// Focus a space by index.
     @discardableResult
     static func focusSpace(_ space: Int) -> Bool {
         guard let path = executablePath else { return false }
-        return run(path, args: ["-m", "space", "--focus", "\(space)"]) != nil
+        let ok = run(path, args: ["-m", "space", "--focus", "\(space)"]) != nil
+        invalidateWindowCache()
+        return ok
     }
 
     // MARK: - Private
