@@ -294,6 +294,12 @@ class AppDelegate: NSObject,
             name: NSWindow.didMoveNotification,
             object: nil
         )
+
+        // Poll foreground processes per pane so we can auto-save the
+        // moment a watched process (lazygit, claude) starts up — layout
+        // events alone wouldn't catch a user typing `lazygit` in an
+        // existing pane.
+        AutoStateSaver.shared.startProcessWatcher()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(quickTerminalDidChangeVisibility),

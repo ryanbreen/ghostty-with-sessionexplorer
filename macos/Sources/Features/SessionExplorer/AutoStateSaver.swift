@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import GhosttyKit
 
@@ -15,6 +16,23 @@ final class AutoStateSaver {
     private var pendingReason: String?
     private var suppressionDepth = 0
     private var noSaveBefore: Date?
+
+    /// Process names that, when first observed running in a pane, should
+    /// trigger an immediate save so we never lose track of where lazygit /
+    /// claude got launched. Compared case-insensitively against
+    /// libproc's proc_name() output. Keep this list in sync with
+    /// TemplateCommand.inferred(fromForegroundProcess:) in
+    /// SessionTemplateTypes.swift — a process here that has no inference
+    /// rule there will trigger a save that doesn't change anything.
+    private let watchedProcessNames: Set<String> = ["lazygit", "claude"]
+
+    /// Per-surface memory of the last observed foreground process so we
+    /// fire on the transition (lazygit appeared) instead of every poll
+    /// while it stays running.
+    private var lastSeenProcessByView: [ObjectIdentifier: String] = [:]
+
+    private let processPollInterval: TimeInterval = 3.0
+    private var processPollTimer: Timer?
 
     private init() {}
 
@@ -69,6 +87,67 @@ final class AutoStateSaver {
             self.noSaveBefore = nil
         }
         return false
+    }
+
+    // MARK: - Process watcher
+
+    /// Start polling every surface's foreground process. When a watched
+    /// process (lazygit, claude, ...) appears in a pane that wasn't running
+    /// it last poll, schedule an auto-save so we capture the new command
+    /// before the user closes that window. Fired transitions only — we do
+    /// not save every poll while the process keeps running.
+    func startProcessWatcher() {
+        processPollTimer?.invalidate()
+        processPollTimer = Timer.scheduledTimer(
+            withTimeInterval: processPollInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.pollForegroundProcesses()
+            }
+        }
+    }
+
+    private func pollForegroundProcesses() {
+        guard !isSuppressed else { return }
+
+        var live: [ObjectIdentifier: String?] = [:]
+        var triggered = false
+
+        for window in NSApp.windows {
+            guard let controller = window.windowController as? BaseTerminalController,
+                  let root = controller.surfaceTree.root else { continue }
+            for view in root.leaves() {
+                guard let cSurface = view.surface else { continue }
+                let pid = ghostty_surface_foreground_pid(cSurface)
+                let name: String? = pid > 0
+                    ? Self.processName(pid: pid_t(pid))?.lowercased()
+                    : nil
+
+                let key = ObjectIdentifier(view)
+                live[key] = name
+                let prior = lastSeenProcessByView[key] ?? nil
+
+                if let name, name != prior, watchedProcessNames.contains(name) {
+                    triggered = true
+                }
+            }
+        }
+
+        // Drop entries for surfaces that disappeared so the dictionary
+        // doesn't grow unbounded across the app's lifetime.
+        lastSeenProcessByView = live.compactMapValues { $0 }
+
+        if triggered {
+            scheduleAutoSave(reason: "watched-process-started")
+        }
+    }
+
+    private static func processName(pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let result = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard result > 0 else { return nil }
+        return String(cString: buffer)
     }
 
     private func cancelPendingSave() {
