@@ -713,6 +713,7 @@ class AppDelegate: NSObject,
     @objc private func terminalControllerCreated(_ notification: Notification) {
         guard notification.object is TerminalController else { return }
         AutoStateSaver.shared.scheduleAutoSave(reason: "terminal-controller-created")
+        scheduleWindowsMenuSync()
     }
 
     @MainActor
@@ -726,6 +727,7 @@ class AppDelegate: NSObject,
             ? "tab-removed"
             : "window-closed"
         AutoStateSaver.shared.scheduleAutoSave(reason: reason)
+        scheduleWindowsMenuSync()
     }
 
     @MainActor
@@ -737,6 +739,37 @@ class AppDelegate: NSObject,
         }
 
         AutoStateSaver.shared.scheduleAutoSave(reason: "window-moved-or-tab-reordered")
+        scheduleWindowsMenuSync()
+    }
+
+    /// Ghostty tabs are AppKit-tabbed NSWindows, so each tab is its own NSWindow
+    /// and therefore appears as a separate entry in the Window menu by default.
+    /// Hide every non-primary tab so the menu lists one entry per Ghostty
+    /// window instead of one per tab. Deferred to the next runloop tick so that
+    /// tabGroup membership has settled after add/remove/reorder.
+    @MainActor
+    private func scheduleWindowsMenuSync() {
+        DispatchQueue.main.async { [weak self] in
+            self?.syncWindowsMenuExclusion()
+        }
+    }
+
+    @MainActor
+    private func syncWindowsMenuExclusion() {
+        var seenGroups = Set<ObjectIdentifier>()
+        for window in NSApp.windows {
+            guard window.windowController is BaseTerminalController else { continue }
+            guard let group = window.tabGroup else {
+                window.isExcludedFromWindowsMenu = false
+                continue
+            }
+            let groupID = ObjectIdentifier(group)
+            // Use the first window of the tab group as the menu representative.
+            // All other tabs in the group are hidden from the menu.
+            let isPrimary = group.windows.first === window && !seenGroups.contains(groupID)
+            window.isExcludedFromWindowsMenu = !isPrimary
+            if isPrimary { seenGroups.insert(groupID) }
+        }
     }
 
     @objc private func quickTerminalDidChangeVisibility(_ notification: Notification) {
