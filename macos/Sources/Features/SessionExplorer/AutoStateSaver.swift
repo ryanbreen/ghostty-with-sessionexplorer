@@ -190,10 +190,16 @@ final class AutoStateSaver {
     }
 
     private func stampLiveStateIDs(from template: SessionTemplate) {
+        // Use uniquingKeysWith because state.json can legitimately end up
+        // with duplicate stateIDs (hand edits, prior buggy migrations,
+        // recapture races). Trusting uniqueness here was crashing the app
+        // with "Fatal error: Duplicate values for key" the moment a save
+        // ran while two windows shared an ID.
         let stateWindowsByID = Dictionary(
-            uniqueKeysWithValues: template.windows.map {
+            template.windows.map {
                 (Self.normalizedPersistentStateID($0.id) ?? $0.id.normalizedForMatching, $0)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         let stateWindowsByTitle = Dictionary(
             template.windows.map { ($0.normalizedTitle, $0) },
