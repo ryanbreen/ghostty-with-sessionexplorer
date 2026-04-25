@@ -386,12 +386,25 @@ enum StateWindowRecapturer {
                     view.stateID = statePane.view.stateID ?? view.stateID
                     if let command = statePane.view.command {
                         view.command = command
+                    } else if let inferred = TemplateCommand.inferred(
+                        fromForegroundProcess: livePane.view.foregroundProcess
+                    ) {
+                        view.command = inferred
                     }
                 }
                 continue
             }
 
-            if shouldDefaultLeftColumnCommand(path: livePane.path, tree: liveTree) {
+            // Unmatched pane: prefer process-based inference (lazygit,
+            // claude, ...) over the older left-column heuristic so we
+            // remember whatever's actually running.
+            if let inferred = TemplateCommand.inferred(
+                fromForegroundProcess: livePane.view.foregroundProcess
+            ) {
+                merged.updateView(at: livePane.path) { view in
+                    view.command = inferred
+                }
+            } else if shouldDefaultLeftColumnCommand(path: livePane.path, tree: liveTree) {
                 merged.updateView(at: livePane.path) { view in
                     view.command = .dynamic(resolver: "claudeResumeLatest", params: [:])
                 }

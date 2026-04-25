@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import GhosttyKit
 
 /// Captures all currently open terminal surfaces as a flat JSON array.
@@ -96,6 +97,8 @@ enum SurfaceListSnapshotter {
                 "split_directions": directions,
                 "pty_pid": NSNull(),
                 "shell_pid": NSNull(),
+                "foreground_pid": NSNull(),
+                "foreground_process": NSNull(),
                 "working_directory": workingDirectory,
                 "is_focused": focusedSurface === view,
             ]
@@ -105,10 +108,30 @@ enum SurfaceListSnapshotter {
                 if shellPid > 0 {
                     surface["shell_pid"] = shellPid
                 }
+
+                // Capture the foreground process so save paths can infer
+                // a startup command (e.g. "lazygit running" → save lazygit
+                // as the pane's command). Without this, brand-new windows
+                // saved for the first time come back blank.
+                let fgPid = ghostty_surface_foreground_pid(cSurface)
+                if fgPid > 0 {
+                    surface["foreground_pid"] = fgPid
+                    if let name = processName(pid: pid_t(fgPid)) {
+                        surface["foreground_process"] = name
+                    }
+                }
             }
 
             return surface
         }
+    }
+
+    /// Look up the executable name for a PID via libproc.
+    private static func processName(pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let result = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard result > 0 else { return nil }
+        return String(cString: buffer)
     }
 
     private static func splitPath(

@@ -177,6 +177,15 @@ extension ExplorerSurfaceNode {
 extension ExplorerSurfaceView {
     var templateSanitized: ExplorerSurfaceView {
         var copy = self
+        // Promote a recognizable foreground process (lazygit, claude) into
+        // a startup command before we strip the runtime fields, so brand-new
+        // windows saved for the first time remember what was running.
+        // Don't overwrite an existing command — the user may have set one
+        // explicitly and we don't want process detection to clobber it.
+        if copy.command == nil,
+           let inferred = TemplateCommand.inferred(fromForegroundProcess: foregroundProcess) {
+            copy.command = inferred
+        }
         copy.id = nil
         copy.foregroundPid = nil
         copy.foregroundProcess = nil
@@ -280,5 +289,24 @@ enum TemplateCommand: Codable, Equatable {
             .split(whereSeparator: \.isNewline)
             .map(String.init)
         return literal(fromCommands: commands)
+    }
+
+    /// Infer a startup command from a foreground process name captured by
+    /// the snapshotter. Used so newly-saved windows remember their lazygit
+    /// / claude panes without the user re-attributing them by hand.
+    ///
+    /// Returns nil for processes we don't know how to bring back so the
+    /// pane stays uncommanded (just opens a fresh shell on restore).
+    static func inferred(fromForegroundProcess process: String?) -> TemplateCommand? {
+        guard let raw = process?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        switch raw.lowercased() {
+        case "lazygit":
+            return .literal(commands: ["lazygit"])
+        case "claude":
+            return .dynamic(resolver: "claudeResumeLatest", params: [:])
+        default:
+            return nil
+        }
     }
 }

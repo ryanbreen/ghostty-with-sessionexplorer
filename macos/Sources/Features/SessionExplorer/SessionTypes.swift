@@ -518,6 +518,8 @@ struct LiveSurfaceRecord: Decodable {
     let splitPath: [Int]
     let splitDirections: [String]
     let shellPid: Int?
+    let foregroundPid: Int?
+    let foregroundProcess: String?
     let workingDirectory: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -533,6 +535,8 @@ struct LiveSurfaceRecord: Decodable {
         case splitPath = "split_path"
         case splitDirections = "split_directions"
         case shellPid = "shell_pid"
+        case foregroundPid = "foreground_pid"
+        case foregroundProcess = "foreground_process"
         case workingDirectory = "working_directory"
     }
 
@@ -550,6 +554,8 @@ struct LiveSurfaceRecord: Decodable {
         splitPath = try c.decode([Int].self, forKey: .splitPath)
         splitDirections = (try? c.decode([String].self, forKey: .splitDirections)) ?? []
         shellPid = try c.decodeIfPresent(Int.self, forKey: .shellPid)
+        foregroundPid = try c.decodeIfPresent(Int.self, forKey: .foregroundPid)
+        foregroundProcess = try c.decodeIfPresent(String.self, forKey: .foregroundProcess)
         workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
     }
 }
@@ -567,8 +573,8 @@ private struct LivePane {
             stateID: record.stateID,
             pwd: record.workingDirectory,
             title: record.tabTitle,
-            foregroundPid: record.shellPid,
-            foregroundProcess: nil,
+            foregroundPid: record.foregroundPid ?? record.shellPid,
+            foregroundProcess: record.foregroundProcess,
             processExited: nil
         )
     }
