@@ -31,7 +31,7 @@ final class AutoStateSaver {
     /// while it stays running.
     private var lastSeenProcessByView: [ObjectIdentifier: String] = [:]
 
-    private let processPollInterval: TimeInterval = 3.0
+    private let processPollInterval: TimeInterval = 60.0
     private var processPollTimer: Timer?
 
     private init() {}
