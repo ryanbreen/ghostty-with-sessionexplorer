@@ -250,6 +250,13 @@
                                     <action selector="closeAllWindows:" target="-1" id="hrz-eb-l5t"/>
                                 </connections>
                             </menuItem>
+                            <menuItem isSeparatorItem="YES" id="WRB-yh-sep"/>
+                            <menuItem title="Recheck Yabai" id="WRB-yh-itm">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="recheckYabai:" target="bbz-4X-AYv" id="WRB-yh-act"/>
+                                </connections>
+                            </menuItem>
                         </items>
                     </menu>
                 </menuItem>

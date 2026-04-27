@@ -19,6 +19,76 @@ struct YabaiWindow: Decodable {
 }
 
 enum YabaiHelper {
+    // MARK: - Health Gate
+
+    /// Whether yabai is currently considered responsive. Flips to `false`
+    /// when `run()` has to SIGKILL a wedged yabai. While unhealthy, every
+    /// public caller short-circuits without spawning a subprocess, so a
+    /// stuck yabai cannot pile up timeouts on the main thread.
+    ///
+    /// Recovery is deliberately manual: after `yabai --restart-service`,
+    /// run File → Recheck Yabai (which calls `recheckHealth()`). We don't
+    /// auto-recover because the symptom we're trying to avoid — repeated
+    /// 0.25s main-thread stalls — would come right back if we silently
+    /// re-probed on every call.
+    static var isHealthy: Bool {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        return healthy
+    }
+
+    private static let healthLock = NSLock()
+    nonisolated(unsafe) private static var healthy: Bool = true
+
+    private static func markUnhealthy() {
+        healthLock.lock()
+        let wasHealthy = healthy
+        healthy = false
+        healthLock.unlock()
+        if wasHealthy {
+            Ghostty.logger.warning(
+                "YabaiHelper: marking yabai unhealthy — calls will short-circuit until File → Recheck Yabai"
+            )
+        }
+    }
+
+    private static func markHealthy() {
+        healthLock.lock()
+        let wasUnhealthy = !healthy
+        healthy = true
+        healthLock.unlock()
+        if wasUnhealthy {
+            Ghostty.logger.info("YabaiHelper: yabai recheck passed — yabai-aware paths re-enabled")
+        }
+    }
+
+    /// Probe yabai with a small synchronous query, bypassing the health
+    /// gate. Returns true on a successful response inside the run-timeout
+    /// budget, and clears the unhealthy flag + drops the stale window
+    /// cache so the next caller sees fresh state.
+    ///
+    /// Use after restarting yabai out-of-band (`yabai --restart-service`,
+    /// `yabai --start-service`, etc.) — the File → Recheck Yabai menu
+    /// item is wired to this.
+    @discardableResult
+    static func recheckHealth() -> Bool {
+        guard let path = executablePath else {
+            markUnhealthy()
+            return false
+        }
+        // `--displays` is bounded (one entry per monitor) so the response
+        // is tiny and parses fast — we just need proof that yabai will
+        // talk to us within the timeout.
+        guard let data = runUnchecked(path, args: ["-m", "query", "--displays"]),
+              (try? JSONSerialization.jsonObject(with: data)) != nil else {
+            markUnhealthy()
+            return false
+        }
+        invalidateWindowCache()
+        markHealthy()
+        return true
+    }
+
     // MARK: - Binary Resolution
 
     static var executablePath: String? {
@@ -50,6 +120,8 @@ enum YabaiHelper {
     /// returned during that gap will miss the window entirely or report its
     /// pre-move space.
     static func queryWindows(bypassCache: Bool = false) -> [YabaiWindow] {
+        guard isHealthy else { return [] }
+
         if !bypassCache {
             cacheLock.lock()
             let now = Date()
@@ -101,7 +173,7 @@ enum YabaiHelper {
     /// Move a yabai window to a space by index.
     @discardableResult
     static func moveWindow(id: Int, toSpace space: Int) -> Bool {
-        guard let path = executablePath else { return false }
+        guard isHealthy, let path = executablePath else { return false }
         let ok = run(path, args: ["-m", "window", "\(id)", "--space", "\(space)"]) != nil
         invalidateWindowCache()
         return ok
@@ -110,7 +182,7 @@ enum YabaiHelper {
     /// Focus a space by index.
     @discardableResult
     static func focusSpace(_ space: Int) -> Bool {
-        guard let path = executablePath else { return false }
+        guard isHealthy, let path = executablePath else { return false }
         let ok = run(path, args: ["-m", "space", "--focus", "\(space)"]) != nil
         invalidateWindowCache()
         return ok
@@ -157,6 +229,14 @@ enum YabaiHelper {
     private static let killGrace: TimeInterval = 0.25
 
     private static func run(_ path: String, args: [String]) -> Data? {
+        runUnchecked(path, args: args)
+    }
+
+    /// Same as `run` but bypasses no caller — health gating is enforced at
+    /// `queryWindows` / `moveWindow` / `focusSpace` (the call sites that
+    /// run on the main thread). `recheckHealth` calls this directly so a
+    /// probe can fire while the gate is still closed.
+    private static func runUnchecked(_ path: String, args: [String]) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
@@ -189,6 +269,7 @@ enum YabaiHelper {
             Ghostty.logger.warning(
                 "YabaiHelper: timed out running '\(cmd)' (>\(Self.runTimeout)s); killed"
             )
+            markUnhealthy()
             return nil
         }
 

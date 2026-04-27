@@ -1260,6 +1260,25 @@ class AppDelegate: NSObject,
         AgentLayout.openForFocused(controller: controller, ghostty: ghostty)
     }
 
+    /// Force a fresh probe of yabai. Use after `yabai --restart-service`
+    /// or any other out-of-band yabai bounce — the in-app health gate is
+    /// deliberately manual so a wedged yabai cannot silently re-introduce
+    /// main-thread stalls.
+    @IBAction func recheckYabai(_ sender: Any?) {
+        let ok = YabaiHelper.recheckHealth()
+        let alert = NSAlert()
+        if ok {
+            alert.messageText = "Yabai is healthy"
+            alert.informativeText = "Yabai responded to a probe. Yabai-aware paths (workspace recording, restore-time placement) are re-enabled."
+            alert.alertStyle = .informational
+        } else {
+            alert.messageText = "Yabai did not respond"
+            alert.informativeText = "Yabai didn't answer within the timeout. Yabai-aware paths will short-circuit so the UI cannot freeze. Try `yabai --restart-service` and run File → Recheck Yabai again."
+            alert.alertStyle = .warning
+        }
+        alert.runModal()
+    }
+
     @IBAction func showSessionExplorer(_ sender: Any?) {
         if let controller = sessionExplorerWindowController,
            let window = controller.window {
