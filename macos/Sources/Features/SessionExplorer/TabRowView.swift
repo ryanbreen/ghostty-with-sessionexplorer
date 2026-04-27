@@ -17,12 +17,6 @@ struct TabRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isExpanded.toggle()
-                    }
-                }
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 12) {
@@ -64,16 +58,28 @@ struct TabRowView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.explorerMuted)
-                .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                .frame(width: 12)
+            // Toggle hit area is restricted to the leading chevron + index
+            // so the title text field below can actually receive focus —
+            // a row-wide .onTapGesture eats the click that SwiftUI would
+            // otherwise hand to the embedded NSTextField.
+            HStack(spacing: 12) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.explorerMuted)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 12)
 
-            Text("\(index)")
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(.explorerMuted)
-                .frame(width: 24, alignment: .leading)
+                Text("\(index)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.explorerMuted)
+                    .frame(width: 24, alignment: .leading)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isExpanded.toggle()
+                }
+            }
 
             if isTemplate {
                 SessionExplorerCommitTextField(

@@ -20,12 +20,6 @@ struct WindowCardView: View {
         VStack(spacing: 0) {
             headerRow
                 .background(isHovering ? Color.explorerSurface3.opacity(0.35) : Color.clear)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isExpanded.toggle()
-                    }
-                }
                 .onHover { isHovering = $0 }
 
             if isExpanded {
@@ -74,14 +68,26 @@ struct WindowCardView: View {
 
     private var headerRow: some View {
         HStack(spacing: 12) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.explorerMuted)
-                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            // Toggle hit area is restricted to the leading chevron + icon
+            // so the title and workspace text fields below can actually
+            // receive focus. A row-wide .onTapGesture eats the click that
+            // SwiftUI would otherwise hand to the embedded NSTextField.
+            HStack(spacing: 12) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.explorerMuted)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
 
-            Image(systemName: isTemplate ? "square.stack.3d.up.fill" : "rectangle.split.3x1")
-                .font(.system(size: 12))
-                .foregroundColor(isTemplate ? .explorerAccent : .explorerProcess)
+                Image(systemName: isTemplate ? "square.stack.3d.up.fill" : "rectangle.split.3x1")
+                    .font(.system(size: 12))
+                    .foregroundColor(isTemplate ? .explorerAccent : .explorerProcess)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isExpanded.toggle()
+                }
+            }
 
             if isTemplate {
                 SessionExplorerCommitTextField(
@@ -100,6 +106,12 @@ struct WindowCardView: View {
             Text("· \(window.tabs.count) \(window.tabs.count == 1 ? "tab" : "tabs")")
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(.explorerMuted)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isExpanded.toggle()
+                    }
+                }
 
             if isTemplate {
                 SessionExplorerCommitTextField(
