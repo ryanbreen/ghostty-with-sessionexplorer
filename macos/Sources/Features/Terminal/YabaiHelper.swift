@@ -42,14 +42,22 @@ enum YabaiHelper {
     /// each uncached call spawns a yabai subprocess and blocks on
     /// waitUntilExit. With ~30 tabs that's a 100ms+ main-thread stall every
     /// 2-second refresh tick. The cache collapses a refresh's N calls into 1.
-    static func queryWindows() -> [YabaiWindow] {
-        cacheLock.lock()
-        let now = Date()
-        if let entry = cachedWindows, now.timeIntervalSince(entry.timestamp) < cacheTTL {
+    ///
+    /// Pass `bypassCache: true` when you specifically need fresh data — for
+    /// example, restore-time placement waits for a brand-new NSWindow to
+    /// register with yabai's signal handler, and a stale cached query
+    /// returned during that gap will miss the window entirely or report its
+    /// pre-move space.
+    static func queryWindows(bypassCache: Bool = false) -> [YabaiWindow] {
+        if !bypassCache {
+            cacheLock.lock()
+            let now = Date()
+            if let entry = cachedWindows, now.timeIntervalSince(entry.timestamp) < cacheTTL {
+                cacheLock.unlock()
+                return entry.windows
+            }
             cacheLock.unlock()
-            return entry.windows
         }
-        cacheLock.unlock()
 
         guard let path = executablePath,
               let data = run(path, args: ["-m", "query", "--windows"]) else { return [] }

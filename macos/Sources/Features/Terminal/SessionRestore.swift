@@ -177,8 +177,14 @@ enum SessionRestorer {
                 )
                 DispatchQueue.main.asyncAfter(deadline: windowDeadline) {
                     // Re-snapshot yabai IDs right before creating this window.
+                    // bypassCache because the snapshot we took at restore start
+                    // is now stale and the cached value would mask any window
+                    // that appeared in the meantime, including one we placed
+                    // for a previous session window in this same restore.
                     let idsBeforeCreate = Set(
-                        YabaiHelper.queryWindows().filter { $0.pid == ourPID }.map(\.id)
+                        YabaiHelper.queryWindows(bypassCache: true)
+                            .filter { $0.pid == ourPID }
+                            .map(\.id)
                     )
 
                     let firstTab = sessionWindow.tabs[0]
@@ -289,7 +295,11 @@ enum SessionRestorer {
         targetSpace: Int,
         windowTitle: String
     ) {
-        let newWindows = YabaiHelper.queryWindows()
+        // bypassCache: yabai may have only just registered the new window
+        // via its WindowServer signal handler, and a stale 1s cached query
+        // would either omit the window or report its pre-move space — both
+        // make the placement silently no-op so windows land on space 1.
+        let newWindows = YabaiHelper.queryWindows(bypassCache: true)
             .filter { $0.pid == ourPID && !existingIDs.contains($0.id) }
 
         guard let newWin = newWindows.max(by: { $0.id < $1.id }) else {
