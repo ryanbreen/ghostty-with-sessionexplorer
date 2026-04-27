@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 /// Lightweight interface to the yabai window manager.
 /// Used by session snapshot (record workspace) and restore (place windows).
@@ -144,6 +145,17 @@ enum YabaiHelper {
         return frameMatches[0]
     }
 
+    /// Hard timeout for a single yabai invocation. queryWindows() is called
+    /// from @MainActor contexts (SessionRestore, AutoStateSaver via
+    /// SurfaceListSnapshotter), and yabai can wedge for arbitrarily long
+    /// when WindowServer floods it with events during restore — observed
+    /// 2026-04-26 as two consecutive 25s+/290s main-thread hangs whose
+    /// kernel stack ended in lck_mtx_sleep, meaning yabai was stuck on its
+    /// own mutex and would never have written to our pipe. Past this
+    /// budget we abandon the call so the UI cannot freeze.
+    private static let runTimeout: TimeInterval = 0.25
+    private static let killGrace: TimeInterval = 0.25
+
     private static func run(_ path: String, args: [String]) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
@@ -152,8 +164,39 @@ enum YabaiHelper {
         process.standardOutput = stdout
         process.standardError = Pipe()
         guard (try? process.run()) != nil else { return nil }
-        process.waitUntilExit()
+
+        // Drain stdout and reap on a worker queue; the calling thread waits
+        // on a semaphore with a hard timeout. If the timeout elapses we
+        // escalate SIGTERM → grace → SIGKILL. SIGKILL is unblockable, so
+        // the kernel always reaps within microseconds — that's the
+        // guarantee that lets the main thread escape no matter how stuck
+        // yabai is.
+        let result = ResultBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            result.data = stdout.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            done.signal()
+        }
+
+        if done.wait(timeout: .now() + runTimeout) == .timedOut {
+            process.terminate()
+            if done.wait(timeout: .now() + killGrace) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = done.wait(timeout: .now() + killGrace)
+            }
+            let cmd = ([path] + args).joined(separator: " ")
+            Ghostty.logger.warning(
+                "YabaiHelper: timed out running '\(cmd)' (>\(Self.runTimeout)s); killed"
+            )
+            return nil
+        }
+
         guard process.terminationStatus == 0 else { return nil }
-        return stdout.fileHandleForReading.readDataToEndOfFile()
+        return result.data
+    }
+
+    private final class ResultBox: @unchecked Sendable {
+        var data: Data?
     }
 }
