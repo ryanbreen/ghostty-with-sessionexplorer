@@ -283,6 +283,12 @@
                                     <action selector="copy:" target="-1" id="B4F-hg-R4T"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="Copy (Claude-Cleaned)" keyEquivalent="c" id="WRB-cc-itm">
+                                <modifierMask key="keyEquivalentModifierMask" option="YES" command="YES"/>
+                                <connections>
+                                    <action selector="copyClaudeCleaned:" target="bbz-4X-AYv" id="WRB-cc-act"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Paste" id="i27-pK-umN">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

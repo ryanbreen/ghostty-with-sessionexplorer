@@ -1260,6 +1260,42 @@ class AppDelegate: NSObject,
         AgentLayout.openForFocused(controller: controller, ghostty: ghostty)
     }
 
+    /// Copy the focused surface's selection through Simon Willison's
+    /// Claude-Code paste cleanup
+    /// (https://tools.simonwillison.net/cleanup-claude-code-paste) before
+    /// putting it on the pasteboard. Bound to Cmd-Opt-C — plain Cmd-C is
+    /// untouched so code blocks stay copyable verbatim.
+    @IBAction func copyClaudeCleaned(_ sender: Any?) {
+        guard let controller = NSApp.keyWindow?.windowController as? BaseTerminalController,
+              let surfaceView = controller.focusedSurface,
+              let surface = surfaceView.surface else {
+            NSSound.beep()
+            return
+        }
+
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &text) else {
+            NSSound.beep()
+            return
+        }
+        defer { ghostty_surface_free_text(surface, &text) }
+
+        guard let cString = text.text else {
+            NSSound.beep()
+            return
+        }
+        let raw = String(cString: cString)
+        guard !raw.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let cleaned = ClaudePasteCleaner.clean(raw)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(cleaned, forType: .string)
+    }
+
     /// Force a fresh probe of yabai. Use after `yabai --restart-service`
     /// or any other out-of-band yabai bounce — the in-app health gate is
     /// deliberately manual so a wedged yabai cannot silently re-introduce
