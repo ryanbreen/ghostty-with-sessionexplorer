@@ -316,9 +316,19 @@ fn drawPromptEditorBar(
             }
             if (line_slice.len == 0) continue;
 
-            const line_y: f64 = bar_top_f + v_padding_px +
-                @as(f64, @floatFromInt(visual_idx)) * cell_h_f +
-                cell_h_f * 0.45;
+            // z2d.text.show treats `y` as the screen y of the
+            // outline-coord origin, which (after the outline's
+            // pre-applied scale(1,-1).translate(0,-em)) corresponds
+            // to the TOP of the em square. With opts_size = 0.85 *
+            // cell_h, em-bottom (the baseline) sits at y + 0.85 *
+            // cell_h. Cap-top is roughly at y + 0.30 * opts_size and
+            // descender at y + 1.20 * opts_size, so the visible body
+            // spans 0.9 * opts_size = ~0.765 * cell_h. To center
+            // that body inside the cell, we put y at
+            // cell_top - 0.14 * cell_h.
+            const cell_top: f64 = bar_top_f + v_padding_px +
+                @as(f64, @floatFromInt(visual_idx)) * cell_h_f;
+            const line_y: f64 = cell_top - cell_h_f * 0.14;
 
             z2d.text.show(
                 alloc,
@@ -337,16 +347,21 @@ fn drawPromptEditorBar(
 
     // -- Caret --
     // Drawn even on empty buffer. Caret-aware scrolling above ensures
-    // the cursor line is always inside the visible window.
+    // the cursor line is always inside the visible window. The caret
+    // spans ~80% of the cell height (10% inset top and bottom), which
+    // visually matches the text body's vertical extent computed above
+    // — so the caret reads as "this is the line I'm editing", not
+    // "this is a tall cursor next to short text".
     if (lines.cursor_line >= first_visible_line and
         lines.cursor_line < first_visible_line + visible_lines)
     {
         const visual_caret_line = lines.cursor_line - first_visible_line;
         const caret_x: f64 = x_start +
             @as(f64, @floatFromInt(lines.cursor_col)) * advance_px;
-        const caret_top: f64 = bar_top_f + v_padding_px +
-            @as(f64, @floatFromInt(visual_caret_line)) * cell_h_f + 2.0;
-        const caret_bottom: f64 = caret_top + cell_h_f - 4.0;
+        const cell_top: f64 = bar_top_f + v_padding_px +
+            @as(f64, @floatFromInt(visual_caret_line)) * cell_h_f;
+        const caret_top: f64 = cell_top + cell_h_f * 0.1;
+        const caret_bottom: f64 = cell_top + cell_h_f * 0.9;
         self.drawCaret(alloc, caret_x, caret_top, caret_bottom) catch |err| {
             log.warn("Error rendering prompt editor caret: {}", .{err});
         };

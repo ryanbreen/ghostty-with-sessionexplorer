@@ -147,6 +147,48 @@ pub fn handleKey(
         return .consumed;
     }
 
+    // Up / Down: move between *logical* lines (i.e. split on '\n' in
+    // the buffer) preserving the byte-column. Critically, both are
+    // always consumed even when there's nowhere to move — that
+    // prevents the keystroke from falling through to the PTY where
+    // the shell would interpret it as history navigation, which
+    // would visually leave the editor and confuse the user. (Hard-
+    // wrapped visual lines are not yet treated as navigable here;
+    // that needs the renderer's wrap geometry. Slice 9+.)
+    if (event.key == .arrow_up and event.mods.empty()) {
+        const buf = self.buffer.text();
+        var line_start: usize = self.cursor;
+        while (line_start > 0 and buf[line_start - 1] != '\n') : (line_start -= 1) {}
+        if (line_start == 0) {
+            self.cursor = 0;
+            return .consumed;
+        }
+        const col = self.cursor - line_start;
+        var prev_start: usize = line_start - 1;
+        while (prev_start > 0 and buf[prev_start - 1] != '\n') : (prev_start -= 1) {}
+        const prev_len = (line_start - 1) - prev_start;
+        self.cursor = prev_start + @min(col, prev_len);
+        return .consumed;
+    }
+    if (event.key == .arrow_down and event.mods.empty()) {
+        const buf = self.buffer.text();
+        var line_start: usize = self.cursor;
+        while (line_start > 0 and buf[line_start - 1] != '\n') : (line_start -= 1) {}
+        const col = self.cursor - line_start;
+        var line_end: usize = self.cursor;
+        while (line_end < buf.len and buf[line_end] != '\n') : (line_end += 1) {}
+        if (line_end >= buf.len) {
+            self.cursor = buf.len;
+            return .consumed;
+        }
+        const next_start = line_end + 1;
+        var next_end: usize = next_start;
+        while (next_end < buf.len and buf[next_end] != '\n') : (next_end += 1) {}
+        const next_len = next_end - next_start;
+        self.cursor = next_start + @min(col, next_len);
+        return .consumed;
+    }
+
     // Home / End jump the cursor.
     if (event.key == .home) {
         self.cursor = 0;
