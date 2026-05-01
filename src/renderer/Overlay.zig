@@ -301,12 +301,14 @@ fn drawPromptEditorBar(
         @as(f64, @floatFromInt(visible_lines))) * cell_h_f / 2.0;
 
     // -- Bar background --
-    const border = Color.prompt_editor.rectBorder();
-    const fill: z2d.Pixel = blk: {
-        var rgba: z2d.pixel.RGBA = .fromPixel(Color.prompt_editor.pixel());
-        rgba.a = 230;
-        break :blk rgba.multiply().asPixel();
-    };
+    // Fully opaque fill. Translucent fills (even at 90% alpha) let
+    // the terminal grid bleed through the bar, which produces visibly
+    // confusing layered text when the bar is tall and the underlying
+    // grid has a lot of content. The editor owns the rows it occupies,
+    // so the right behavior is full coverage.
+    const opaque_pixel = Color.prompt_editor.pixel();
+    const border = opaque_pixel;
+    const fill = opaque_pixel;
     self.highlightGridRect(
         alloc,
         0,
