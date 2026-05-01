@@ -88,6 +88,15 @@ prompt_editor_cursor: usize = 0,
 /// overlay just before `applyFeatures`.
 prompt_editor_view_top: usize = 0,
 
+/// Terminal scroll distance from "live" (in cell rows). Drives the
+/// column-scroll behavior: the bar pins to the bottom of the column,
+/// not the bottom of the viewport, so as the user wheel-scrolls into
+/// terminal scrollback the bar's bottom rows progressively scroll
+/// off the bottom of the viewport while older terminal content
+/// flows in from above. Zero means "viewing live"; positive means
+/// "scrolled back this many rows from live".
+prompt_editor_scroll_offset: usize = 0,
+
 /// The set of available features and their configuration.
 pub const Feature = union(enum) {
     highlight_hyperlinks,
@@ -138,16 +147,19 @@ pub fn deinit(self: *Overlay, alloc: Allocator) void {
 /// the renderer with an arena-allocated copy before `applyFeatures`.
 /// `cursor_byte` is the byte offset within `buf` of the editor's cursor
 /// (always on a UTF-8 codepoint boundary). `view_top` is the buffer-
-/// line index of the first visible line.
+/// line index of the first visible line. `scroll_offset` is the
+/// terminal viewport's distance from live in cell rows.
 pub fn setPromptEditorBuffer(
     self: *Overlay,
     buf: []const u8,
     cursor_byte: usize,
     view_top: usize,
+    scroll_offset: usize,
 ) void {
     self.prompt_editor_buffer = buf;
     self.prompt_editor_cursor = cursor_byte;
     self.prompt_editor_view_top = view_top;
+    self.prompt_editor_scroll_offset = scroll_offset;
 }
 
 /// Returns a pending image that can be used to copy, convert, upload, etc.
@@ -259,21 +271,39 @@ fn drawPromptEditorBar(
         row_count - bottom_padding_cells - top_reservation_cells;
     const visible_lines = @min(lines.line_count, available_rows);
     const first_visible_line = self.prompt_editor_view_top;
+    const scroll_offset = self.prompt_editor_scroll_offset;
 
-    // Bar height: matches the visible content. Minimum of 2 cells so
-    // an empty buffer (single empty visual line) still shows a real
-    // bar with vertical breathing room around the caret.
-    const bar_height_cells = @max(2, visible_lines);
+    // Column-scroll: the bar pins to the bottom of the *column*, not
+    // the viewport. When terminal is at live (scroll_offset == 0) the
+    // bar fills its natural rows at the viewport bottom. When the
+    // user wheel-scrolls into terminal scrollback, the bar's bottom
+    // rows progressively scroll off the bottom of the viewport while
+    // older terminal content flows in from the top — same as if the
+    // bar and the terminal grid above it were two contiguous regions
+    // of one scrolling column.
+    if (scroll_offset >= visible_lines) return; // bar fully off-screen
+    const visible_bar_rows = visible_lines - scroll_offset;
+
+    // Bar height in viewport: the lesser of (visible bar rows after
+    // applying the column-scroll offset) and (rows actually
+    // available). Always at least 1; we don't enforce a 2-row
+    // minimum here because column-scroll gracefully shrinks the bar
+    // toward zero as it scrolls off, and we don't want it to
+    // suddenly snap to 2 rows on the way out.
+    const bar_height_cells = @min(visible_bar_rows, available_rows);
+    if (bar_height_cells == 0) return;
     if (row_count < bar_height_cells + bottom_padding_cells) return;
 
     const bar_top_row = row_count - bar_height_cells - bottom_padding_cells;
     const bar_top_f: f64 = @as(f64, @floatFromInt(bar_top_row)) * cell_h_f;
 
     // Vertical content offset within the bar so a 1-line buffer in a
-    // 2-cell bar reads as "centered" rather than "anchored to top".
-    // For visible_lines >= bar_height_cells this evaluates to 0.
-    const v_padding_px: f64 = (@as(f64, @floatFromInt(bar_height_cells)) -
-        @as(f64, @floatFromInt(visible_lines))) * cell_h_f / 2.0;
+    // multi-row bar reads as "centered" rather than "anchored to top".
+    const v_padding_px: f64 = if (bar_height_cells > visible_bar_rows)
+        (@as(f64, @floatFromInt(bar_height_cells)) -
+            @as(f64, @floatFromInt(visible_bar_rows))) * cell_h_f / 2.0
+    else
+        0.0;
 
     // -- Bar background --
     // Explicit RGBA at alpha 255. Using the bare RGB pixel here can
@@ -303,13 +333,17 @@ fn drawPromptEditorBar(
     };
 
     // -- Text per visible line --
+    // Render only the bar rows that survive the column-scroll offset.
+    // Bar's bottom rows scroll off first; we display rows
+    // [first_visible_line .. first_visible_line + visible_bar_rows].
     const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
     if (font) |f| {
         var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
 
         var visual_idx: usize = 0;
-        while (visual_idx < visible_lines) : (visual_idx += 1) {
+        while (visual_idx < visible_bar_rows) : (visual_idx += 1) {
             const line_idx = first_visible_line + visual_idx;
+            if (line_idx >= lines.starts.len) break;
             const start = lines.starts[line_idx];
             const end = if (line_idx + 1 < lines.starts.len)
                 lines.starts[line_idx + 1]
@@ -354,7 +388,7 @@ fn drawPromptEditorBar(
 
     // -- Caret --
     if (lines.cursor_line >= first_visible_line and
-        lines.cursor_line < first_visible_line + visible_lines)
+        lines.cursor_line < first_visible_line + visible_bar_rows)
     {
         const visual_caret_line = lines.cursor_line - first_visible_line;
         const caret_x: f64 = x_start +

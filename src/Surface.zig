@@ -3775,31 +3775,16 @@ pub fn scrollCallback(
         }
 
         if (y.delta != 0) {
-            // If the prompt editor is active, drain the editor's
-            // view_top first. Wheel-scrolling the bar moves you
-            // through the editor's own buffer; only the leftover
-            // delta (after the editor's view_top hits its top or
-            // bottom limit) reaches the terminal's scrollback. This
-            // matches the user's mental model of "the editor is
-            // a sub-viewport that catches scroll first."
-            //
-            // Sign convention: in this function, y.delta is
-            // negative-down (wheel up = positive delta). The
-            // terminal scroll below flips it. We feed the editor
-            // the same convention: negative = scroll up = view_top
-            // toward 0.
-            var residual = y.delta;
-            if (self.editor.isActive()) {
-                residual = self.editor.applyScroll(y.delta * -1) * -1;
-                self.queueRender() catch {};
-            }
-            if (residual != 0) {
-                // Modify our viewport, this requires a lock since
-                // it affects rendering. We have to switch signs
-                // here because our delta is negative down but our
-                // viewport is positive down.
-                self.io.terminal.scrollViewport(.{ .delta = residual * -1 });
-            }
+            // The bar and the terminal grid live in one virtual
+            // scrolling column. A wheel event always goes to the
+            // terminal's viewport scroll — the overlay reads the
+            // resulting `distance from live` each frame and shifts
+            // the bar's render position accordingly, so the bar's
+            // bottom rows progressively scroll off the bottom of
+            // the viewport while terminal scrollback flows in from
+            // the top. No separate "editor scroll" state.
+            self.io.terminal.scrollViewport(.{ .delta = y.delta * -1 });
+            if (self.editor.isActive()) self.queueRender() catch {};
         }
     }
 

@@ -1256,6 +1256,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 /// editor under the mutex, possibly after caret-aware
                 /// adjustment. The overlay paints starting from here.
                 prompt_editor_view_top: usize,
+                /// Distance from "live" in terminal cell rows. The
+                /// overlay uses this to do column-scroll: as the user
+                /// wheel-scrolls into terminal scrollback, the bar
+                /// rendering progressively scrolls off the bottom of
+                /// the viewport while older terminal content flows in.
+                prompt_editor_scroll_offset: usize,
             };
 
             // Update all our data as tightly as possible within the mutex.
@@ -1389,6 +1395,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 var prompt_editor_buffer: []const u8 = "";
                 var prompt_editor_cursor: usize = 0;
                 var prompt_editor_view_top: usize = 0;
+                const prompt_editor_scroll_offset: usize = blk: {
+                    if (scrollbar.total <= scrollbar.len) break :blk 0;
+                    const live_offset = scrollbar.total - scrollbar.len;
+                    if (scrollbar.offset >= live_offset) break :blk 0;
+                    break :blk live_offset - scrollbar.offset;
+                };
                 if (state.prompt_editor_active) {
                     if (state.prompt_editor) |ed| {
                         prompt_editor_buffer = arena_alloc.dupe(
@@ -1467,6 +1479,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .prompt_editor_buffer = prompt_editor_buffer,
                     .prompt_editor_cursor = prompt_editor_cursor,
                     .prompt_editor_view_top = prompt_editor_view_top,
+                    .prompt_editor_scroll_offset = prompt_editor_scroll_offset,
                 };
             };
 
@@ -1542,6 +1555,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 critical.prompt_editor_buffer,
                 critical.prompt_editor_cursor,
                 critical.prompt_editor_view_top,
+                critical.prompt_editor_scroll_offset,
             ) catch |err| {
                 log.warn(
                     "error rebuilding overlay surface err={}",
@@ -2423,6 +2437,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             prompt_editor_buffer: []const u8,
             prompt_editor_cursor: usize,
             prompt_editor_view_top: usize,
+            prompt_editor_scroll_offset: usize,
         ) Overlay.InitError!void {
             // const start = std.time.Instant.now() catch unreachable;
             // const start_micro = std.time.microTimestamp();
@@ -2485,6 +2500,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 prompt_editor_buffer,
                 prompt_editor_cursor,
                 prompt_editor_view_top,
+                prompt_editor_scroll_offset,
             );
             overlay.applyFeatures(
                 alloc,
