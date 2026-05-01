@@ -170,11 +170,11 @@ pub fn applyFeatures(
     };
 }
 
-/// Draw the prompt editor's bottom-rows indicator. The bottom 2 rows of
-/// the viewport are painted with a translucent magenta fill, then the
-/// editor's buffer text is overlaid in white inside the bar. Two rows
-/// (rather than one) so descenders, line padding, and macOS window
-/// edge chrome don't clip the rendered glyphs.
+/// Draw the prompt editor's bottom-rows indicator. A 2-cell-tall bar
+/// painted with a near-opaque magenta fill, sitting one row above the
+/// viewport's bottom (so the entire bar is comfortably visible — macOS
+/// window chrome can otherwise eat the very-bottom row). Editor buffer
+/// text is rendered in white inside the bar.
 fn drawPromptEditorBar(
     self: *Overlay,
     alloc: Allocator,
@@ -182,7 +182,8 @@ fn drawPromptEditorBar(
 ) void {
     const row_count = state.row_data.len;
     const bar_height_cells: usize = 2;
-    if (row_count < bar_height_cells) return;
+    const bottom_padding_cells: usize = 1;
+    if (row_count < bar_height_cells + bottom_padding_cells) return;
 
     const cols = blk: {
         const row_slice = state.row_data.slice();
@@ -192,9 +193,17 @@ fn drawPromptEditorBar(
     };
     if (cols == 0) return;
 
-    const bar_top_row = row_count - bar_height_cells;
+    const bar_top_row = row_count - bar_height_cells - bottom_padding_cells;
     const border = Color.prompt_editor.rectBorder();
-    const fill = Color.prompt_editor.rectFill();
+
+    // Use a high-alpha (near opaque) fill so the bar reads clearly even
+    // against arbitrary terminal output behind it. The standard
+    // rectFill (alpha 96 / 38%) is too faint at editor sizes.
+    const fill: z2d.Pixel = blk: {
+        var rgba: z2d.pixel.RGBA = .fromPixel(Color.prompt_editor.pixel());
+        rgba.a = 230;
+        break :blk rgba.multiply().asPixel();
+    };
 
     self.highlightGridRect(
         alloc,
@@ -209,23 +218,23 @@ fn drawPromptEditorBar(
         return;
     };
 
-    // Render buffer text on top of the bar if we have any. Lazy-loads
-    // a system mono font on first call.
+    // Render buffer text on top of the bar.
     if (self.prompt_editor_buffer.len == 0) return;
 
     const font = self.ensurePromptEditorFont(alloc) orelse return;
 
-    // Position text inside the bar. The bar spans two cells; place the
-    // baseline near the bottom of the upper cell so the text sits
-    // visually centered with descenders comfortably inside the second
-    // cell, well clear of any bottom-edge clipping.
+    // z2d.text.show treats the y argument as the TOP of the em square
+    // (after font scaling), with text extending downward. With a font
+    // size of 0.85 * cell_h, total glyph extent (cap top -> descender)
+    // is about 1.05 * cell_h, which fits comfortably inside our 2-cell
+    // bar. Center vertically by setting y at the upper cell's midpoint.
     const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
     const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
     const bar_top_f: f64 = @as(f64, @floatFromInt(bar_top_row)) * cell_h_f;
-    const x: f64 = cell_w_f * 0.5;
-    const y: f64 = bar_top_f + cell_h_f * 1.4;
+    const opts_size: f64 = cell_h_f * 0.85;
+    const x: f64 = cell_w_f * 0.4;
+    const y: f64 = bar_top_f + cell_h_f * 0.45;
 
-    // White text.
     const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
     var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
 
@@ -237,7 +246,7 @@ fn drawPromptEditorBar(
         self.prompt_editor_buffer,
         x,
         y,
-        .{ .size = cell_h_f * 1.1, .fill_opts = .{} },
+        .{ .size = opts_size, .fill_opts = .{} },
     ) catch |err| {
         log.warn("Error rendering prompt editor text: {}", .{err});
     };
