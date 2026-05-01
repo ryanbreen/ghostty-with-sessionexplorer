@@ -34,10 +34,12 @@ const FileType = @import("../file_type.zig").FileType;
 /// Result of `computePromptEditorView` — the view's first-visible-line
 /// after applying caret-aware sticky scrolling, plus the maximum
 /// permissible value of view_top (used by Surface to clamp wheel-
-/// driven scrolling).
+/// driven scrolling), plus the total visual line count (used by the
+/// caller to compute bar height).
 const PromptEditorView = struct {
     view_top: usize,
     max_view_top: usize,
+    line_count: usize,
 };
 
 /// Walk the editor buffer, splitting into visual lines on `\n` and at
@@ -105,7 +107,11 @@ fn computePromptEditorView(
     // the source (caret-aware adjustment, wheel scroll, etc.).
     if (view_top > max_top) view_top = max_top;
 
-    return .{ .view_top = view_top, .max_view_top = max_top };
+    return .{
+        .view_top = view_top,
+        .max_view_top = max_top,
+        .line_count = line_count,
+    };
 }
 
 const macos = switch (builtin.os.tag) {
@@ -1415,6 +1421,35 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         ed.max_view_top = view.max_view_top;
                         ed.cursor_dirty = false;
                         prompt_editor_view_top = view.view_top;
+
+                        // Geometry contract: the editor "owns" the bottom
+                        // N rows of the viewport. Scroll terminal content
+                        // up so the cursor (and the prompt above it) are
+                        // not in the editor's region. Without this the
+                        // editor visually overlays content that the user
+                        // expects to see above. With this the editor and
+                        // the terminal are vertically stacked, no
+                        // overlap — terminal renders only above the bar
+                        // (its bottom rows are blank because we pushed
+                        // them to scrollback), editor renders at the
+                        // bottom.
+                        const visible_lines: usize =
+                            @min(view.line_count, available_rows);
+                        const desired_rows: usize = @max(2, visible_lines);
+                        if (trows > desired_rows) {
+                            const screen = state.terminal.screens.active;
+                            const cur_y: usize = screen.cursor.y;
+                            const editor_top: usize = trows - desired_rows;
+                            if (cur_y >= editor_top) {
+                                const shift = cur_y - editor_top + 1;
+                                state.terminal.scrollUp(shift) catch {};
+                                const cur_x = screen.cursor.x;
+                                screen.cursorAbsolute(
+                                    cur_x,
+                                    @intCast(cur_y - shift),
+                                );
+                            }
+                        }
                     }
                 }
 

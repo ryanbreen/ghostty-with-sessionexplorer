@@ -265,14 +265,19 @@ fn drawPromptEditorBar(
         @as(f64, @floatFromInt(visible_lines))) * cell_h_f / 2.0;
 
     // -- Bar background --
-    // Fully opaque fill. Translucent fills (even at 90% alpha) let
-    // the terminal grid bleed through the bar, which produces visibly
-    // confusing layered text when the bar is tall and the underlying
-    // grid has a lot of content. The editor owns the rows it occupies,
-    // so the right behavior is full coverage.
-    const opaque_pixel = Color.prompt_editor.pixel();
-    const border = opaque_pixel;
-    const fill = opaque_pixel;
+    // Explicit RGBA at alpha 255. Using the bare RGB pixel here can
+    // produce surprising blending when z2d composites onto the
+    // RGBA-initialized surface; force the wire format we want so the
+    // overlay image lands on the GPU as fully opaque magenta.
+    const rgb = Color.prompt_editor.rgb();
+    const opaque_rgba: z2d.Pixel = .{ .rgba = .{
+        .r = rgb.r,
+        .g = rgb.g,
+        .b = rgb.b,
+        .a = 255,
+    } };
+    const border = opaque_rgba;
+    const fill = opaque_rgba;
     self.highlightGridRect(
         alloc,
         0,
