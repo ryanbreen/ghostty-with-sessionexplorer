@@ -625,6 +625,7 @@ pub fn init(
         .renderer_state = .{
             .mutex = mutex,
             .terminal = &self.io.terminal,
+            .prompt_editor = &self.editor,
         },
         .renderer_thr = undefined,
         .mouse = .{},

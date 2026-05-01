@@ -1159,6 +1159,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 preedit: ?renderer.State.Preedit,
                 scrollbar: terminal.Scrollbar,
                 overlay_features: []const Overlay.Feature,
+                /// Snapshot of the prompt editor's buffer text for this
+                /// frame. Cloned into arena_alloc so it outlives the lock
+                /// release. Empty when the editor is inactive or absent.
+                prompt_editor_buffer: []const u8,
             };
 
             // Update all our data as tightly as possible within the mutex.
@@ -1282,12 +1286,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     break :overlay features.items;
                 };
 
+                // Snapshot the prompt editor's buffer text for this frame.
+                // The pointer in `state.prompt_editor` is stable for the
+                // surface's lifetime; we still hold the mutex here so the
+                // buffer's contents won't be mutated mid-clone.
+                const prompt_editor_buffer: []const u8 = pe: {
+                    if (!state.prompt_editor_active) break :pe "";
+                    const ed = state.prompt_editor orelse break :pe "";
+                    break :pe arena_alloc.dupe(u8, ed.buffer.text()) catch "";
+                };
+
                 break :critical .{
                     .links = links,
                     .mouse = state.mouse,
                     .preedit = preedit,
                     .scrollbar = scrollbar,
                     .overlay_features = overlay_features,
+                    .prompt_editor_buffer = prompt_editor_buffer,
                 };
             };
 
@@ -1360,6 +1375,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // outside of any critical areas.
             self.rebuildOverlay(
                 critical.overlay_features,
+                critical.prompt_editor_buffer,
             ) catch |err| {
                 log.warn(
                     "error rebuilding overlay surface err={}",
@@ -2238,6 +2254,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         fn rebuildOverlay(
             self: *Self,
             features: []const Overlay.Feature,
+            prompt_editor_buffer: []const u8,
         ) Overlay.InitError!void {
             // const start = std.time.Instant.now() catch unreachable;
             // const start_micro = std.time.microTimestamp();
@@ -2296,6 +2313,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.overlay = new;
                 break :overlay &self.overlay.?;
             };
+            overlay.setPromptEditorBuffer(prompt_editor_buffer);
             overlay.applyFeatures(
                 alloc,
                 &self.terminal_state,

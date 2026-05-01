@@ -35,6 +35,11 @@ mouse: Mouse = .{},
 /// viewport. Updated by Surface under `mutex`.
 prompt_editor_active: bool = false,
 
+/// Pointer to the prompt editor on the owning Surface. The renderer
+/// reads `editor.buffer.text()` under `mutex` and clones into an arena
+/// for that frame. Set by Surface during init; null otherwise.
+prompt_editor: ?*const inputpkg.editor.Editor = null,
+
 pub const Mouse = struct {
     /// The point on the viewport where the mouse currently is. We use
     /// viewport points to avoid the complexity of mapping the mouse to

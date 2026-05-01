@@ -32,4 +32,11 @@ echo "==========================" >> "$LOG"
 
 export OS_ACTIVITY_MODE=disable
 
+# Force Ghostty's logging on. Without GHOSTTY_LOG set, the AppKit run
+# loop seems to swallow most std.log output after the early sentry init
+# even when stderr is redirected, leaving the log file with only
+# startup-phase entries. Setting both sinks explicitly keeps the Zig
+# logger writing to stderr (and unified log) for the entire session.
+export GHOSTTY_LOG="stderr,macos"
+
 exec "$APP" --prompt-editor=true >> "$LOG" 2>&1

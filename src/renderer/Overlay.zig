@@ -67,6 +67,16 @@ surface: z2d.Surface,
 /// Cell size information so we can map grid coordinates to pixels.
 cell_size: CellSize,
 
+/// Lazy-loaded font for rendering prompt-editor text. Loaded on first
+/// `.prompt_editor` feature application from the system mono font.
+prompt_editor_font: ?z2d.Font = null,
+prompt_editor_font_loaded: bool = false,
+
+/// Snapshot of the prompt editor's buffer text for the current frame.
+/// Set by the renderer just before applyFeatures and cleared after.
+/// Lifetime is tied to the renderer's per-frame arena.
+prompt_editor_buffer: []const u8 = &.{},
+
 /// The set of available features and their configuration.
 pub const Feature = union(enum) {
     highlight_hyperlinks,
@@ -110,6 +120,13 @@ pub fn init(alloc: Allocator, sz: Size) InitError!Overlay {
 
 pub fn deinit(self: *Overlay, alloc: Allocator) void {
     self.surface.deinit(alloc);
+    if (self.prompt_editor_font) |*f| f.deinit(alloc);
+}
+
+/// Set the prompt editor's buffer snapshot for this frame. Called by
+/// the renderer with an arena-allocated copy before `applyFeatures`.
+pub fn setPromptEditorBuffer(self: *Overlay, buf: []const u8) void {
+    self.prompt_editor_buffer = buf;
 }
 
 /// Returns a pending image that can be used to copy, convert, upload, etc.
@@ -153,10 +170,10 @@ pub fn applyFeatures(
     };
 }
 
-/// Draw the prompt editor's bottom-row indicator: a translucent magenta
-/// bar across the entire bottom row of the viewport. Phase 1 visual
-/// signal that the editor is active. The bar is replaced by real editor
-/// rendering in subsequent phases.
+/// Draw the prompt editor's bottom-row indicator. The bottom row of the
+/// viewport is painted with a translucent magenta fill, then the
+/// editor's buffer text is overlaid in white. The buffer is provided by
+/// the renderer via `setPromptEditorBuffer` ahead of this call.
 fn drawPromptEditorBar(
     self: *Overlay,
     alloc: Allocator,
@@ -186,7 +203,59 @@ fn drawPromptEditorBar(
         fill,
     ) catch |err| {
         log.warn("Error drawing prompt editor bar: {}", .{err});
+        return;
     };
+
+    // Render buffer text on top of the bar if we have any. Lazy-loads
+    // a system mono font on first call.
+    if (self.prompt_editor_buffer.len == 0) return;
+
+    const font = self.ensurePromptEditorFont(alloc) orelse return;
+
+    // Pixel coordinates for the bottom row, with a small left padding.
+    // Baseline is roughly at 80% down the cell (typical for mono fonts).
+    const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
+    const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
+    const row_top_f: f64 = @as(f64, @floatFromInt(row_count - 1)) * cell_h_f;
+    const x: f64 = cell_w_f * 0.5;
+    const y: f64 = row_top_f + cell_h_f * 0.8;
+
+    // White text. Build an opaque pixel pattern.
+    const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
+    var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
+
+    z2d.text.show(
+        alloc,
+        &self.surface,
+        &pattern,
+        font,
+        self.prompt_editor_buffer,
+        x,
+        y,
+        .{ .size = cell_h_f * 0.85, .fill_opts = .{} },
+    ) catch |err| {
+        log.warn("Error rendering prompt editor text: {}", .{err});
+    };
+}
+
+/// Lazily load the prompt editor's render font. macOS-only path for now.
+/// Returns null if loading fails (caller should silently skip text render).
+fn ensurePromptEditorFont(self: *Overlay, alloc: Allocator) ?*z2d.Font {
+    if (self.prompt_editor_font_loaded) {
+        if (self.prompt_editor_font) |*f| return f;
+        return null;
+    }
+    self.prompt_editor_font_loaded = true;
+
+    // System monospace font on macOS. TODO: portable lookup for
+    // Linux/Windows when this code reaches those targets.
+    const path = "/System/Library/Fonts/SFNSMono.ttf";
+    const f = z2d.Font.loadFile(alloc, path) catch |err| {
+        log.warn("Failed to load prompt editor font path={s} err={}", .{ path, err });
+        return null;
+    };
+    self.prompt_editor_font = f;
+    return &self.prompt_editor_font.?;
 }
 
 /// Add rectangles around contiguous hyperlinks in the render state.
