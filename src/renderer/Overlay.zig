@@ -244,18 +244,36 @@ fn drawPromptEditorBar(
     ) catch return;
     defer alloc.free(lines.starts);
 
-    // Bar height: number of visible content rows + 1 row of internal
-    // padding (so descenders aren't tight against the bottom border).
+    // Number of content lines we'll show this frame.
     const visible_lines = @min(lines.line_count, prompt_editor_max_lines);
-    const first_visible_line = if (lines.line_count > prompt_editor_max_lines)
-        lines.line_count - prompt_editor_max_lines
-    else
-        0;
-    const bar_height_cells = @max(2, visible_lines + 1);
+
+    // Caret-aware scrolling. If the buffer fits, show everything. If it
+    // doesn't, slide the visible window so the cursor's line is the
+    // *last* visible line — the user is almost always editing near the
+    // tail of the buffer, and "cursor at bottom of viewport" matches
+    // typical line-editor / pager behavior. Cmd+Home / arrow-up still
+    // pulls earlier content into view.
+    const first_visible_line: usize = blk: {
+        if (lines.line_count <= prompt_editor_max_lines) break :blk 0;
+        if (lines.cursor_line + 1 <= prompt_editor_max_lines) break :blk 0;
+        break :blk lines.cursor_line + 1 - prompt_editor_max_lines;
+    };
+
+    // Bar height: at minimum 2 cells so an empty buffer still shows a
+    // visible bar; otherwise just enough cells for the visible lines
+    // (no extra padding row — that left ugly empty space below the
+    // text on short buffers).
+    const bar_height_cells = @max(2, visible_lines);
     if (row_count < bar_height_cells + bottom_padding_cells) return;
 
     const bar_top_row = row_count - bar_height_cells - bottom_padding_cells;
     const bar_top_f: f64 = @as(f64, @floatFromInt(bar_top_row)) * cell_h_f;
+
+    // Vertical content offset within the bar so a 1-line buffer in a
+    // 2-cell bar reads as "centered" rather than "anchored to top".
+    // For visible_lines >= bar_height_cells this evaluates to 0.
+    const v_padding_px: f64 = (@as(f64, @floatFromInt(bar_height_cells)) -
+        @as(f64, @floatFromInt(visible_lines))) * cell_h_f / 2.0;
 
     // -- Bar background --
     const border = Color.prompt_editor.rectBorder();
@@ -298,7 +316,7 @@ fn drawPromptEditorBar(
             }
             if (line_slice.len == 0) continue;
 
-            const line_y: f64 = bar_top_f +
+            const line_y: f64 = bar_top_f + v_padding_px +
                 @as(f64, @floatFromInt(visual_idx)) * cell_h_f +
                 cell_h_f * 0.45;
 
@@ -318,14 +336,15 @@ fn drawPromptEditorBar(
     }
 
     // -- Caret --
-    // Compute caret line + column (visual). Drawn even on empty buffer.
+    // Drawn even on empty buffer. Caret-aware scrolling above ensures
+    // the cursor line is always inside the visible window.
     if (lines.cursor_line >= first_visible_line and
         lines.cursor_line < first_visible_line + visible_lines)
     {
         const visual_caret_line = lines.cursor_line - first_visible_line;
         const caret_x: f64 = x_start +
             @as(f64, @floatFromInt(lines.cursor_col)) * advance_px;
-        const caret_top: f64 = bar_top_f +
+        const caret_top: f64 = bar_top_f + v_padding_px +
             @as(f64, @floatFromInt(visual_caret_line)) * cell_h_f + 2.0;
         const caret_bottom: f64 = caret_top + cell_h_f - 4.0;
         self.drawCaret(alloc, caret_x, caret_top, caret_bottom) catch |err| {
