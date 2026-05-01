@@ -31,6 +31,79 @@ const getConstraint = @import("../font/nerd_font_attributes.zig").getConstraint;
 
 const FileType = @import("../file_type.zig").FileType;
 
+/// Result of `computePromptEditorView` — the view's first-visible-line
+/// after applying caret-aware sticky scrolling, plus the maximum
+/// permissible value of view_top (used by Surface to clamp wheel-
+/// driven scrolling).
+const PromptEditorView = struct {
+    view_top: usize,
+    max_view_top: usize,
+};
+
+/// Walk the editor buffer, splitting into visual lines on `\n` and at
+/// every `cols_per_line` codepoints, then apply caret-aware sticky
+/// scrolling to derive the first-visible-line for this frame. The
+/// caller-provided `prev_view_top` carries over wheel-driven scroll
+/// adjustments from prior frames; we only override it when the cursor
+/// has moved outside the resulting visible window.
+fn computePromptEditorView(
+    buf: []const u8,
+    cursor_byte: usize,
+    prev_view_top: usize,
+    cols_per_line: usize,
+    available_rows: usize,
+) PromptEditorView {
+    // Two-pass walk would be cleaner but the buffer is short enough
+    // (typical shell input) that one pass with running totals suffices.
+    var line_count: usize = 1;
+    var col: usize = 0;
+    var i: usize = 0;
+    var cursor_line: usize = 0;
+    var cursor_assigned = false;
+
+    while (i < buf.len) {
+        if (i == cursor_byte and !cursor_assigned) {
+            cursor_line = line_count - 1;
+            cursor_assigned = true;
+        }
+        if (buf[i] == '\n') {
+            i += 1;
+            line_count += 1;
+            col = 0;
+            continue;
+        }
+        var n: usize = i + 1;
+        while (n < buf.len and (buf[n] & 0xC0) == 0x80) : (n += 1) {}
+        col += 1;
+        if (col >= cols_per_line) {
+            line_count += 1;
+            col = 0;
+        }
+        i = n;
+    }
+    if (!cursor_assigned) cursor_line = line_count - 1;
+
+    const visible = @min(line_count, available_rows);
+    const max_top: usize = if (line_count > visible)
+        line_count - visible
+    else
+        0;
+
+    var view_top = prev_view_top;
+    if (buf.len == 0) {
+        view_top = 0;
+    } else {
+        if (cursor_line < view_top) view_top = cursor_line;
+        const view_bottom_excl = view_top + visible;
+        if (cursor_line + 1 > view_bottom_excl) {
+            view_top = cursor_line + 1 - visible;
+        }
+        if (view_top > max_top) view_top = max_top;
+    }
+
+    return .{ .view_top = view_top, .max_view_top = max_top };
+}
+
 const macos = switch (builtin.os.tag) {
     .macos => @import("macos"),
     else => void,
@@ -1168,6 +1241,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 /// this to compute the caret's visual line+col after
                 /// applying line-wrap.
                 prompt_editor_cursor: usize,
+                /// Sticky scroll position (visual line index of the
+                /// first visible line) for this frame. Read from the
+                /// editor under the mutex, possibly after caret-aware
+                /// adjustment. The overlay paints starting from here.
+                prompt_editor_view_top: usize,
             };
 
             // Update all our data as tightly as possible within the mutex.
@@ -1292,12 +1370,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 };
 
                 // Snapshot the prompt editor's buffer text and cursor
-                // for this frame. The pointer in `state.prompt_editor`
-                // is stable for the surface's lifetime; we still hold
-                // the mutex here so the buffer's contents won't be
-                // mutated mid-clone.
+                // for this frame, and update its scroll state. We hold
+                // the mutex throughout, so the buffer/cursor/view_top
+                // values are all consistent. The renderer is the
+                // sole component that drives caret-aware scrolling;
+                // wheel-driven scrolling is applied separately in
+                // Surface.scrollCallback under the same mutex.
                 var prompt_editor_buffer: []const u8 = "";
                 var prompt_editor_cursor: usize = 0;
+                var prompt_editor_view_top: usize = 0;
                 if (state.prompt_editor_active) {
                     if (state.prompt_editor) |ed| {
                         prompt_editor_buffer = arena_alloc.dupe(
@@ -1305,6 +1386,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             ed.buffer.text(),
                         ) catch "";
                         prompt_editor_cursor = ed.cursor;
+
+                        // Use the terminal's grid dimensions for wrap
+                        // / visible-row math so the editor's column
+                        // boundaries align with terminal columns. The
+                        // overlay uses the same numbers when it
+                        // paints, so the caret lands where it should.
+                        const tcols: usize = self.terminal_state.cols;
+                        const trows: usize = self.terminal_state.rows;
+                        const cols_per_line: usize =
+                            if (tcols >= 2) tcols - 1 else 1;
+                        const available_rows: usize =
+                            if (trows > 1) trows - 1 else 1;
+
+                        const view = computePromptEditorView(
+                            prompt_editor_buffer,
+                            prompt_editor_cursor,
+                            ed.view_top,
+                            cols_per_line,
+                            available_rows,
+                        );
+                        ed.view_top = view.view_top;
+                        ed.max_view_top = view.max_view_top;
+                        prompt_editor_view_top = view.view_top;
                     }
                 }
 
@@ -1316,6 +1420,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .overlay_features = overlay_features,
                     .prompt_editor_buffer = prompt_editor_buffer,
                     .prompt_editor_cursor = prompt_editor_cursor,
+                    .prompt_editor_view_top = prompt_editor_view_top,
                 };
             };
 
@@ -1390,6 +1495,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 critical.overlay_features,
                 critical.prompt_editor_buffer,
                 critical.prompt_editor_cursor,
+                critical.prompt_editor_view_top,
             ) catch |err| {
                 log.warn(
                     "error rebuilding overlay surface err={}",
@@ -2270,6 +2376,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             features: []const Overlay.Feature,
             prompt_editor_buffer: []const u8,
             prompt_editor_cursor: usize,
+            prompt_editor_view_top: usize,
         ) Overlay.InitError!void {
             // const start = std.time.Instant.now() catch unreachable;
             // const start_micro = std.time.microTimestamp();
@@ -2328,7 +2435,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.overlay = new;
                 break :overlay &self.overlay.?;
             };
-            overlay.setPromptEditorBuffer(prompt_editor_buffer, prompt_editor_cursor);
+            overlay.setPromptEditorBuffer(
+                prompt_editor_buffer,
+                prompt_editor_cursor,
+                prompt_editor_view_top,
+            );
             overlay.applyFeatures(
                 alloc,
                 &self.terminal_state,

@@ -82,12 +82,10 @@ prompt_editor_buffer: []const u8 = &.{},
 /// and column-overflow wrapping to compute the caret's visual line+col.
 prompt_editor_cursor: usize = 0,
 
-/// Sticky scroll position: the buffer-line index that's currently the
-/// FIRST visible line in the bar. Persists across frames so the bar
-/// only scrolls when the caret would otherwise leave the visible
-/// window — Up arrow within an already-visible region just moves the
-/// caret without moving the surrounding text. Reset to 0 when the
-/// buffer is empty (i.e. activate / commitDone / Ctrl+C / Escape).
+/// First visible buffer line for this frame. Computed by the renderer
+/// (caret-aware sticky scroll + wheel-driven scroll, applied to the
+/// editor inside the renderer's critical section) and handed to the
+/// overlay just before `applyFeatures`.
 prompt_editor_view_top: usize = 0,
 
 /// The set of available features and their configuration.
@@ -139,14 +137,17 @@ pub fn deinit(self: *Overlay, alloc: Allocator) void {
 /// Set the prompt editor's buffer snapshot for this frame. Called by
 /// the renderer with an arena-allocated copy before `applyFeatures`.
 /// `cursor_byte` is the byte offset within `buf` of the editor's cursor
-/// (always on a UTF-8 codepoint boundary).
+/// (always on a UTF-8 codepoint boundary). `view_top` is the buffer-
+/// line index of the first visible line.
 pub fn setPromptEditorBuffer(
     self: *Overlay,
     buf: []const u8,
     cursor_byte: usize,
+    view_top: usize,
 ) void {
     self.prompt_editor_buffer = buf;
     self.prompt_editor_cursor = cursor_byte;
+    self.prompt_editor_view_top = view_top;
 }
 
 /// Returns a pending image that can be used to copy, convert, upload, etc.
@@ -216,30 +217,26 @@ fn drawPromptEditorBar(
     if (cols == 0) return;
 
     // -- Geometry & font --
+    // Use the terminal's cell width as the per-glyph advance even for
+    // the editor font. SFNSMono's natural advance is narrower than
+    // Ghostty's terminal cell, but matching cell-width keeps the
+    // editor's column boundaries (and thus caret positions and
+    // line-wrap points) aligned with terminal columns. The result
+    // reads as "this looks like a terminal with magenta highlighting"
+    // rather than "this is a different proportional layer".
     const font = self.ensurePromptEditorFont(alloc);
     const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
     const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
     const opts_size: f64 = cell_h_f * 0.85;
     const x_start: f64 = cell_w_f * 0.4;
+    const advance_px: f64 = cell_w_f;
+    _ = advance_px; // not used directly; kept for parity with earlier code path
 
-    // Per-glyph advance for our editor font.
-    const advance_px: f64 = if (font) |f| advance: {
-        const upm: f64 = @floatFromInt(f.meta.units_per_em);
-        const adv: f64 = @floatFromInt(f.meta.advance_width_max);
-        break :advance adv * (opts_size / upm);
-    } else cell_w_f;
-
-    // How many editor-font glyphs fit between x_start and the right
-    // edge of the viewport. We hard-wrap at this width so text never
-    // runs off the right side of the bar.
-    const total_width_px: f64 = @as(f64, @floatFromInt(cols)) * cell_w_f;
-    const usable_px: f64 = total_width_px - x_start - cell_w_f * 0.4;
-    const cols_per_line: usize = blk: {
-        if (advance_px <= 0) break :blk 1;
-        const fit: f64 = usable_px / advance_px;
-        if (fit < 1.0) break :blk 1;
-        break :blk @intFromFloat(fit);
-    };
+    // We wrap at the same cols_per_line the renderer's critical
+    // section used when it computed view_top. That value is just
+    // `cols - 1` (one column of padding on the left for the editor's
+    // x_start offset). Match it exactly.
+    const cols_per_line: usize = if (cols >= 2) cols - 1 else 1;
 
     // -- Compute visual lines + caret position --
     const lines = self.computeVisualLines(
@@ -248,41 +245,8 @@ fn drawPromptEditorBar(
     ) catch return;
     defer alloc.free(lines.starts);
 
-    // The bar would like to be 1:1 with the buffer's line count, but
-    // it can only physically occupy the available viewport rows. When
-    // the buffer overflows, only the visible_lines tail-or-window of
-    // it renders.
     const available_rows = row_count - bottom_padding_cells;
     const visible_lines = @min(lines.line_count, available_rows);
-
-    // Sticky view_top. If the buffer is empty (typically right after
-    // activate / commitDone / Ctrl+C), reset. Otherwise, only scroll
-    // when the caret moves outside the current visible window — Up
-    // within the visible region moves the caret only, NOT the text.
-    if (self.prompt_editor_buffer.len == 0) {
-        self.prompt_editor_view_top = 0;
-    } else {
-        // Pull view down if the caret moved above the visible top.
-        if (lines.cursor_line < self.prompt_editor_view_top) {
-            self.prompt_editor_view_top = lines.cursor_line;
-        }
-        // Push view up if the caret moved below the visible bottom.
-        const view_bottom_excl = self.prompt_editor_view_top + visible_lines;
-        if (lines.cursor_line + 1 > view_bottom_excl) {
-            self.prompt_editor_view_top = lines.cursor_line + 1 - visible_lines;
-        }
-        // Clamp so we never show empty rows below the buffer's end —
-        // happens when content was deleted or after a buffer shrink
-        // that doesn't otherwise touch the cursor.
-        if (lines.line_count >= visible_lines and
-            self.prompt_editor_view_top + visible_lines > lines.line_count)
-        {
-            self.prompt_editor_view_top = lines.line_count - visible_lines;
-        }
-        if (lines.line_count < visible_lines) {
-            self.prompt_editor_view_top = 0;
-        }
-    }
     const first_visible_line = self.prompt_editor_view_top;
 
     // Bar height: matches the visible content. Minimum of 2 cells so
@@ -373,18 +337,12 @@ fn drawPromptEditorBar(
     }
 
     // -- Caret --
-    // Drawn even on empty buffer. Caret-aware scrolling above ensures
-    // the cursor line is always inside the visible window. The caret
-    // spans ~80% of the cell height (10% inset top and bottom), which
-    // visually matches the text body's vertical extent computed above
-    // — so the caret reads as "this is the line I'm editing", not
-    // "this is a tall cursor next to short text".
     if (lines.cursor_line >= first_visible_line and
         lines.cursor_line < first_visible_line + visible_lines)
     {
         const visual_caret_line = lines.cursor_line - first_visible_line;
         const caret_x: f64 = x_start +
-            @as(f64, @floatFromInt(lines.cursor_col)) * advance_px;
+            @as(f64, @floatFromInt(lines.cursor_col)) * cell_w_f;
         const cell_top: f64 = bar_top_f + v_padding_px +
             @as(f64, @floatFromInt(visual_caret_line)) * cell_h_f;
         const caret_top: f64 = cell_top + cell_h_f * 0.1;

@@ -58,6 +58,20 @@ buffer: Buffer,
 /// codepoint at it.
 cursor: usize = 0,
 
+/// Sticky scroll position (visual line index of the first visible row
+/// in the bar). Updated by:
+///   - the renderer, under the renderer mutex, each frame, to keep
+///     the cursor inside the visible window (caret-aware scroll);
+///   - the surface's scrollCallback, on user wheel events, to scroll
+///     the bar's contents independently of the cursor.
+view_top: usize = 0,
+
+/// Snapshot of `total_visual_lines - visible_lines` written by the
+/// renderer each frame. Surface's scrollCallback uses this to clamp
+/// editor-side wheel scrolling so view_top never goes past the end of
+/// the buffer. Zero when the buffer fits entirely in the bar.
+max_view_top: usize = 0,
+
 pub fn init(alloc: Allocator, enabled: bool) Editor {
     return .{
         .alloc = alloc,
@@ -77,6 +91,8 @@ pub fn activate(self: *Editor) void {
     if (self.state == .active) return;
     self.buffer.clear();
     self.cursor = 0;
+    self.view_top = 0;
+    self.max_view_top = 0;
     self.state = .active;
     log.debug("prompt editor activated", .{});
 }
@@ -88,6 +104,8 @@ pub fn deactivate(self: *Editor) void {
     self.state = .inactive;
     self.buffer.clear();
     self.cursor = 0;
+    self.view_top = 0;
+    self.max_view_top = 0;
     log.debug("prompt editor deactivated", .{});
 }
 
@@ -216,6 +234,8 @@ pub fn handleKey(
             .key_c => {
                 self.buffer.clear();
                 self.cursor = 0;
+                self.view_top = 0;
+                self.max_view_top = 0;
                 // Return .observed so encodeKey still ships \x03 to
                 // the PTY. The shell's SIGINT handler prints a fresh
                 // prompt; the next keystroke's activate cycle will
@@ -254,6 +274,8 @@ pub fn handleKey(
     if (event.key == .escape and event.mods.empty()) {
         self.buffer.clear();
         self.cursor = 0;
+        self.view_top = 0;
+        self.max_view_top = 0;
         return .consumed;
     }
 
@@ -275,6 +297,31 @@ pub fn handleKey(
 pub fn commitDone(self: *Editor) void {
     self.buffer.clear();
     self.cursor = 0;
+    self.view_top = 0;
+    self.max_view_top = 0;
+}
+
+/// Apply a wheel-scroll delta to the editor's view_top, clamped by
+/// `max_view_top`. Returns the unconsumed delta (in visual lines)
+/// which the caller should pass through to the surrounding terminal
+/// scroll. Positive delta = scroll DOWN (view_top increases, later
+/// lines shown). Negative delta = scroll UP.
+pub fn applyScroll(self: *Editor, delta: isize) isize {
+    if (self.state != .active) return delta;
+
+    if (delta < 0) {
+        const want: usize = @intCast(-delta);
+        const consumed = @min(want, self.view_top);
+        self.view_top -= consumed;
+        return delta + @as(isize, @intCast(consumed));
+    } else if (delta > 0) {
+        const want: usize = @intCast(delta);
+        const room = self.max_view_top - self.view_top;
+        const consumed = @min(want, room);
+        self.view_top += consumed;
+        return delta - @as(isize, @intCast(consumed));
+    }
+    return delta;
 }
 
 /// Insert raw UTF-8 text at the cursor position. Used by paste and any
