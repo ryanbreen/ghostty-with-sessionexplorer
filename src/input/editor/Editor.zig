@@ -29,18 +29,22 @@ pub const State = enum {
     active,
 };
 
-/// What handleKey reports back to the caller. In Phase 1 (shadow mode),
-/// the editor never claims a key — keystrokes still flow to the PTY.
-/// Subsequent phases will add `.consumed` to suppress PTY writes.
+/// What handleKey reports back to the caller.
 pub const Effect = enum {
-    /// Key was recorded into the buffer (or ignored). Caller should
-    /// continue normal handling — the keystroke still goes to the PTY.
+    /// Key was not relevant to the editor. Caller should fall through
+    /// to normal handling (encode + queueIo to PTY).
     observed,
 
-    /// Buffer was committed (Enter received). Caller should continue
-    /// normal handling so the Enter reaches the shell. The buffer is
-    /// cleared.
-    committed,
+    /// Editor consumed the key — buffer was edited, or the key was a
+    /// no-op for the editor but still shouldn't reach the PTY (e.g. an
+    /// Escape that just clears the buffer). Caller must NOT encode the
+    /// key to the PTY.
+    consumed,
+
+    /// Editor wants to commit. The caller should send the editor's
+    /// buffer (followed by a CR) to the PTY and then call
+    /// `commitDone()` to clear the buffer and deactivate.
+    commit,
 };
 
 alloc: Allocator,
@@ -84,54 +88,65 @@ pub fn isActive(self: *const Editor) bool {
     return self.state == .active;
 }
 
-/// Process a key event. In Phase 1 this is shadow-capture only: the
-/// editor records typing into its buffer but never claims the keystroke,
-/// so the shell still sees and echoes the key as usual. The buffer is
-/// logged on Enter and cleared.
-///
-/// Returns `.observed` for normal capture, `.committed` when the buffer
-/// reaches a commit point. Caller continues normal key handling in both
-/// cases.
+/// Process a key event in active mode. Returns `.observed` for keys the
+/// editor doesn't want (modifiers alone, function keys, etc.) so the
+/// caller continues normal PTY encoding. Returns `.consumed` for keys
+/// the editor handled fully (typing, backspace, escape) — caller must
+/// NOT encode. Returns `.commit` when the user pressed Enter — caller
+/// reads `buffer.text()`, ships it to the PTY (with a trailing CR), then
+/// calls `commitDone()`.
 pub fn handleKey(
     self: *Editor,
     event: input.KeyEvent,
 ) Allocator.Error!Effect {
     std.debug.assert(self.state == .active);
 
-    // We only act on press / repeat; release events are ignored.
-    if (event.action != .press and event.action != .repeat) return .observed;
+    // Release events do not interact with the editor at all.
+    if (event.action == .release) return .observed;
 
-    // Enter (no mods) commits the buffer.
+    // Enter (no mods) → commit. Buffer stays populated until commitDone()
+    // so the caller can read it.
     if (event.key == .enter and event.mods.empty()) {
         log.info("commit buffer=\"{s}\" len={d}", .{
             self.buffer.text(),
             self.buffer.len(),
         });
-        self.buffer.clear();
-        return .committed;
+        return .commit;
     }
 
-    // Backspace removes the last byte. UTF-8 codepoint-aware deletion
+    // Backspace deletes the last byte. UTF-8 codepoint-aware deletion
     // is Phase 2; for now ASCII-correct + best-effort on multi-byte.
     if (event.key == .backspace and event.mods.empty()) {
         if (self.buffer.len() > 0) {
             self.buffer.deleteRange(self.buffer.len() - 1, 1);
         }
-        return .observed;
+        return .consumed;
     }
 
-    // Escape clears the buffer (treat as cancel).
+    // Escape clears the buffer (cancel-without-deactivate). Editor stays
+    // active so the user can keep typing on the same prompt.
     if (event.key == .escape and event.mods.empty()) {
         self.buffer.clear();
-        return .observed;
+        return .consumed;
     }
 
-    // Anything that produced printable UTF-8 gets appended.
+    // Anything that produced printable UTF-8 gets appended and consumed.
     if (event.utf8.len > 0) {
         try self.buffer.insertAt(self.buffer.len(), event.utf8);
+        return .consumed;
     }
 
+    // Modifier-only events, arrows we don't yet handle, function keys,
+    // etc. — let through so other Ghostty machinery (binding lookups
+    // etc.) can decide.
     return .observed;
+}
+
+/// Called by the caller after a `.commit` was returned and the buffer
+/// has been shipped to the PTY. Clears the buffer and leaves the
+/// editor active so the next prompt cycle reuses the same instance.
+pub fn commitDone(self: *Editor) void {
+    self.buffer.clear();
 }
 
 test "Editor: starts inactive when disabled" {

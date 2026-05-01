@@ -2805,31 +2805,81 @@ pub fn keyCallback(
         if (insp_ev) |*ev| ev else null,
     )) |v| return v;
 
-    // Prompt editor (EXPERIMENTAL). Phase 1 is shadow-capture: the editor
-    // observes keystrokes when the cursor is in a shell input region (per
-    // OSC 133 semantic state), records the buffer, and logs on Enter. The
-    // keystroke is NOT intercepted — it still flows to the PTY normally.
-    // Subsequent phases will add interception, rendering, and editing.
+    // Prompt editor (EXPERIMENTAL). When the cursor is in an OSC-133
+    // input region and the feature is enabled, route keystrokes through
+    // the editor instead of the PTY. The editor owns the buffer, draws
+    // it in the bottom-row overlay, and on commit (Enter) ships the
+    // bytes to the PTY in one go.
     if (self.config.prompt_editor) prompt_editor: {
-        self.renderer_state.mutex.lock();
-        defer self.renderer_state.mutex.unlock();
+        // Decide activation under the renderer lock since we read shared
+        // terminal state and update renderer-visible flags.
+        const effect = effect: {
+            self.renderer_state.mutex.lock();
+            defer self.renderer_state.mutex.unlock();
 
-        const cursor = &self.io.terminal.screens.active.cursor;
-        const in_input_region = cursor.semantic_content == .input;
+            const cursor = &self.io.terminal.screens.active.cursor;
+            const in_input_region = cursor.semantic_content == .input;
 
-        if (in_input_region and !self.editor.isActive()) {
-            self.editor.activate();
-            self.renderer_state.prompt_editor_active = true;
-        } else if (!in_input_region and self.editor.isActive()) {
-            self.editor.deactivate();
-            self.renderer_state.prompt_editor_active = false;
-        }
+            if (in_input_region and !self.editor.isActive()) {
+                self.editor.activate();
+                self.renderer_state.prompt_editor_active = true;
+            } else if (!in_input_region and self.editor.isActive()) {
+                self.editor.deactivate();
+                self.renderer_state.prompt_editor_active = false;
+            }
 
-        if (!self.editor.isActive()) break :prompt_editor;
+            if (!self.editor.isActive()) break :prompt_editor;
 
-        _ = self.editor.handleKey(event) catch |err| {
-            log.warn("prompt editor handleKey err={}", .{err});
+            const e = self.editor.handleKey(event) catch |err| {
+                log.warn("prompt editor handleKey err={}", .{err});
+                break :prompt_editor;
+            };
+            break :effect e;
         };
+
+        switch (effect) {
+            .observed => {
+                // Editor doesn't want this key — fall through to normal
+                // PTY encoding / keybinding fallback.
+            },
+            .consumed => {
+                // Editor handled the key fully (typing, backspace,
+                // escape). Re-render so the bar reflects the new buffer
+                // and stop further key handling.
+                try self.queueRender();
+                return .consumed;
+            },
+            .commit => {
+                // Editor wants to commit. Allocate `text + '\r'` on the
+                // heap and hand it directly to termio as `write_alloc`
+                // — termio will free it when the write completes. This
+                // avoids the double-copy `Message.writeReq` would do.
+                const total = total: {
+                    self.renderer_state.mutex.lock();
+                    defer self.renderer_state.mutex.unlock();
+
+                    const text = self.editor.buffer.text();
+                    const buf = try self.alloc.alloc(u8, text.len + 1);
+                    @memcpy(buf[0..text.len], text);
+                    buf[text.len] = '\r';
+                    self.editor.commitDone();
+                    break :total buf;
+                };
+
+                if (self.child_exited) {
+                    self.alloc.free(total);
+                    self.close();
+                    return .closed;
+                }
+
+                self.queueIo(.{ .write_alloc = .{
+                    .alloc = self.alloc,
+                    .data = total,
+                } }, .unlocked);
+                try self.queueRender();
+                return .consumed;
+            },
+        }
     }
 
     // If we allow KAM and KAM is enabled then we do nothing.
