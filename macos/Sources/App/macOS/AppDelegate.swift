@@ -1029,8 +1029,6 @@ class AppDelegate: NSObject,
     }
 
     func application(_ app: NSApplication, willEncodeRestorableState coder: NSCoder) {
-        Self.logger.debug("application will save window state")
-
         guard ghostty.config.windowSaveState != "never" else { return }
 
         // Encode our quick terminal state if we have it.
@@ -1799,6 +1797,7 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "paste_from_selection", menuItem: self.menuPasteSelection)
         syncMenuShortcut(config, action: "select_all", menuItem: self.menuSelectAll)
         syncMenuShortcut(config, action: "start_search", menuItem: self.menuFind)
+        syncMenuShortcut(config, action: "end_search", menuItem: self.menuHideFindBar)
         syncMenuShortcut(config, action: "search_selection", menuItem: self.menuSelectionForFind)
         syncMenuShortcut(config, action: "scroll_to_selection", menuItem: self.menuScrollToSelection)
         syncMenuShortcut(config, action: "navigate_search:next", menuItem: self.menuFindNext)

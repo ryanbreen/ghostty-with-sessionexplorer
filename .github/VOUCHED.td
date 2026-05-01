@@ -22,6 +22,7 @@
 007hacky007
 04cb
 0xdvc
+-4rh1t3ct0r7
 aalhendi
 aaron-ang
 abdurrahmanski
@@ -86,6 +87,7 @@ drepper
 dzhlobo
 ekaterinepapava
 elias8
+-enkr1
 enzowilliam
 ephemera
 eriksremess
@@ -144,6 +146,7 @@ knu
 koranir
 kristina8888
 kristofersoler
+kylesower
 laxystem
 lebdron
 liby
@@ -213,6 +216,7 @@ rmengelbrecht
 rmunn
 rockorager
 rpfaeffle
+samasaur1
 sandydoo
 secrus
 seruman
