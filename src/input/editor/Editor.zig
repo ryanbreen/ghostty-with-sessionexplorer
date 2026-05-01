@@ -72,6 +72,14 @@ view_top: usize = 0,
 /// the buffer. Zero when the buffer fits entirely in the bar.
 max_view_top: usize = 0,
 
+/// True when the cursor (or buffer that affects line layout) changed
+/// since the last render. The renderer uses this to decide whether
+/// to apply caret-aware sticky scrolling: if true, snap view_top so
+/// the cursor stays visible; if false, leave view_top alone (so a
+/// wheel scroll that moved the cursor *out* of view persists). The
+/// renderer clears it after each frame.
+cursor_dirty: bool = true,
+
 pub fn init(alloc: Allocator, enabled: bool) Editor {
     return .{
         .alloc = alloc,
@@ -93,6 +101,7 @@ pub fn activate(self: *Editor) void {
     self.cursor = 0;
     self.view_top = 0;
     self.max_view_top = 0;
+    self.cursor_dirty = true;
     self.state = .active;
     log.debug("prompt editor activated", .{});
 }
@@ -106,6 +115,7 @@ pub fn deactivate(self: *Editor) void {
     self.cursor = 0;
     self.view_top = 0;
     self.max_view_top = 0;
+    self.cursor_dirty = true;
     log.debug("prompt editor deactivated", .{});
 }
 
@@ -128,6 +138,14 @@ pub fn handleKey(
 
     // Release events do not interact with the editor at all.
     if (event.action == .release) return .observed;
+
+    // Any path below that returns .consumed or .commit mutates either
+    // the cursor or the buffer (or both). Mark cursor_dirty here once
+    // and let the renderer clear it after caret-aware scroll runs.
+    // .observed paths (function keys, etc.) won't reach here for
+    // mutation; the few exceptions (Ctrl+C) set cursor_dirty
+    // explicitly inside their branch.
+    self.cursor_dirty = true;
 
     // Enter (no mods) → commit. Buffer stays populated until commitDone()
     // so the caller can read it.
@@ -299,6 +317,7 @@ pub fn commitDone(self: *Editor) void {
     self.cursor = 0;
     self.view_top = 0;
     self.max_view_top = 0;
+    self.cursor_dirty = true;
 }
 
 /// Apply a wheel-scroll delta to the editor's view_top, clamped by
@@ -331,6 +350,7 @@ pub fn insertText(self: *Editor, text: []const u8) Allocator.Error!void {
     std.debug.assert(self.state == .active);
     try self.buffer.insertAt(self.cursor, text);
     self.cursor += text.len;
+    self.cursor_dirty = true;
 }
 
 // -- UTF-8 + word-boundary helpers --

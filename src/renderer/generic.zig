@@ -41,17 +41,19 @@ const PromptEditorView = struct {
 };
 
 /// Walk the editor buffer, splitting into visual lines on `\n` and at
-/// every `cols_per_line` codepoints, then apply caret-aware sticky
-/// scrolling to derive the first-visible-line for this frame. The
-/// caller-provided `prev_view_top` carries over wheel-driven scroll
-/// adjustments from prior frames; we only override it when the cursor
-/// has moved outside the resulting visible window.
+/// every `cols_per_line` codepoints, then derive the first-visible-line
+/// for this frame. When `caret_aware` is true the function will pull
+/// view_top to keep the cursor inside the visible window; when false
+/// it preserves `prev_view_top` (used after a wheel scroll, where the
+/// user has intentionally moved the view away from the cursor and we
+/// don't want to undo that on the next frame).
 fn computePromptEditorView(
     buf: []const u8,
     cursor_byte: usize,
     prev_view_top: usize,
     cols_per_line: usize,
     available_rows: usize,
+    caret_aware: bool,
 ) PromptEditorView {
     // Two-pass walk would be cleaner but the buffer is short enough
     // (typical shell input) that one pass with running totals suffices.
@@ -92,14 +94,16 @@ fn computePromptEditorView(
     var view_top = prev_view_top;
     if (buf.len == 0) {
         view_top = 0;
-    } else {
+    } else if (caret_aware) {
         if (cursor_line < view_top) view_top = cursor_line;
         const view_bottom_excl = view_top + visible;
         if (cursor_line + 1 > view_bottom_excl) {
             view_top = cursor_line + 1 - visible;
         }
-        if (view_top > max_top) view_top = max_top;
     }
+    // Always clamp so view_top can't exceed max_top regardless of
+    // the source (caret-aware adjustment, wheel scroll, etc.).
+    if (view_top > max_top) view_top = max_top;
 
     return .{ .view_top = view_top, .max_view_top = max_top };
 }
@@ -1405,9 +1409,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             ed.view_top,
                             cols_per_line,
                             available_rows,
+                            ed.cursor_dirty,
                         );
                         ed.view_top = view.view_top;
                         ed.max_view_top = view.max_view_top;
+                        ed.cursor_dirty = false;
                         prompt_editor_view_top = view.view_top;
                     }
                 }
