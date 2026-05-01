@@ -205,12 +205,15 @@ fn drawPromptEditorBar(
     state: *const terminal.RenderState,
 ) void {
     const row_count = state.row_data.len;
-    // No bottom padding: the bar pins to the absolute bottom row of
-    // the viewport. Otherwise shell output (e.g. the row immediately
-    // below the bar) leaks into the padding row and visibly violates
-    // the "terminal grid ends where the editor begins" contract.
+    // No bottom padding — the bar pins to the absolute bottom row.
+    // We reserve a row at the TOP of the bar's allowance instead, so
+    // the shell's cursor and any terminal content always have at
+    // least one row visible above the bar. Without that reservation
+    // a buffer of `row_count` lines would fill the whole viewport
+    // and visually override the ghostty pane.
     const bottom_padding_cells: usize = 0;
-    if (row_count < 2 + bottom_padding_cells) return;
+    const top_reservation_cells: usize = 1;
+    if (row_count < 2 + bottom_padding_cells + top_reservation_cells) return;
 
     const cols = blk: {
         const row_slice = state.row_data.slice();
@@ -252,7 +255,8 @@ fn drawPromptEditorBar(
     ) catch return;
     defer alloc.free(lines.starts);
 
-    const available_rows = row_count - bottom_padding_cells;
+    const available_rows =
+        row_count - bottom_padding_cells - top_reservation_cells;
     const visible_lines = @min(lines.line_count, available_rows);
     const first_visible_line = self.prompt_editor_view_top;
 

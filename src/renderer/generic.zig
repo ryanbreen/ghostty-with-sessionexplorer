@@ -1397,21 +1397,22 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         ) catch "";
                         prompt_editor_cursor = ed.cursor;
 
-                        // Use the terminal's grid dimensions for wrap
-                        // / visible-row math so the editor's column
-                        // boundaries align with terminal columns. The
-                        // overlay uses the same numbers when it
-                        // paints, so the caret lands where it should.
-                        // available_rows == trows because the bar is
-                        // pinned to the absolute bottom row (no
-                        // padding) — Overlay.zig drops the padding to
-                        // avoid shell output leaking into the row
-                        // beneath the bar.
+                        // Wrap / visible-row math anchored to the
+                        // terminal grid's dimensions so the editor's
+                        // column boundaries align with terminal
+                        // columns. available_rows is `trows - 1`,
+                        // which reserves the topmost viewport row for
+                        // the shell's cursor and any terminal output
+                        // sitting above the bar — without that
+                        // reservation the bar can grow to fill the
+                        // whole viewport and visually override the
+                        // ghostty pane.
                         const tcols: usize = self.terminal_state.cols;
                         const trows: usize = self.terminal_state.rows;
                         const cols_per_line: usize =
                             if (tcols >= 2) tcols - 1 else 1;
-                        const available_rows: usize = trows;
+                        const available_rows: usize =
+                            if (trows > 1) trows - 1 else 1;
 
                         const view = computePromptEditorView(
                             prompt_editor_buffer,
