@@ -205,7 +205,11 @@ fn drawPromptEditorBar(
     state: *const terminal.RenderState,
 ) void {
     const row_count = state.row_data.len;
-    const bottom_padding_cells: usize = 1;
+    // No bottom padding: the bar pins to the absolute bottom row of
+    // the viewport. Otherwise shell output (e.g. the row immediately
+    // below the bar) leaks into the padding row and visibly violates
+    // the "terminal grid ends where the editor begins" contract.
+    const bottom_padding_cells: usize = 0;
     if (row_count < 2 + bottom_padding_cells) return;
 
     const cols = blk: {

@@ -1402,12 +1402,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         // boundaries align with terminal columns. The
                         // overlay uses the same numbers when it
                         // paints, so the caret lands where it should.
+                        // available_rows == trows because the bar is
+                        // pinned to the absolute bottom row (no
+                        // padding) — Overlay.zig drops the padding to
+                        // avoid shell output leaking into the row
+                        // beneath the bar.
                         const tcols: usize = self.terminal_state.cols;
                         const trows: usize = self.terminal_state.rows;
                         const cols_per_line: usize =
                             if (tcols >= 2) tcols - 1 else 1;
-                        const available_rows: usize =
-                            if (trows > 1) trows - 1 else 1;
+                        const available_rows: usize = trows;
 
                         const view = computePromptEditorView(
                             prompt_editor_buffer,
