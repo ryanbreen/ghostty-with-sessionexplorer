@@ -170,17 +170,19 @@ pub fn applyFeatures(
     };
 }
 
-/// Draw the prompt editor's bottom-row indicator. The bottom row of the
-/// viewport is painted with a translucent magenta fill, then the
-/// editor's buffer text is overlaid in white. The buffer is provided by
-/// the renderer via `setPromptEditorBuffer` ahead of this call.
+/// Draw the prompt editor's bottom-rows indicator. The bottom 2 rows of
+/// the viewport are painted with a translucent magenta fill, then the
+/// editor's buffer text is overlaid in white inside the bar. Two rows
+/// (rather than one) so descenders, line padding, and macOS window
+/// edge chrome don't clip the rendered glyphs.
 fn drawPromptEditorBar(
     self: *Overlay,
     alloc: Allocator,
     state: *const terminal.RenderState,
 ) void {
     const row_count = state.row_data.len;
-    if (row_count == 0) return;
+    const bar_height_cells: usize = 2;
+    if (row_count < bar_height_cells) return;
 
     const cols = blk: {
         const row_slice = state.row_data.slice();
@@ -190,15 +192,16 @@ fn drawPromptEditorBar(
     };
     if (cols == 0) return;
 
+    const bar_top_row = row_count - bar_height_cells;
     const border = Color.prompt_editor.rectBorder();
     const fill = Color.prompt_editor.rectFill();
 
     self.highlightGridRect(
         alloc,
         0,
-        row_count - 1,
+        bar_top_row,
         cols,
-        1,
+        bar_height_cells,
         border,
         fill,
     ) catch |err| {
@@ -212,15 +215,17 @@ fn drawPromptEditorBar(
 
     const font = self.ensurePromptEditorFont(alloc) orelse return;
 
-    // Pixel coordinates for the bottom row, with a small left padding.
-    // Baseline is roughly at 80% down the cell (typical for mono fonts).
+    // Position text inside the bar. The bar spans two cells; place the
+    // baseline near the bottom of the upper cell so the text sits
+    // visually centered with descenders comfortably inside the second
+    // cell, well clear of any bottom-edge clipping.
     const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
     const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
-    const row_top_f: f64 = @as(f64, @floatFromInt(row_count - 1)) * cell_h_f;
+    const bar_top_f: f64 = @as(f64, @floatFromInt(bar_top_row)) * cell_h_f;
     const x: f64 = cell_w_f * 0.5;
-    const y: f64 = row_top_f + cell_h_f * 0.8;
+    const y: f64 = bar_top_f + cell_h_f * 1.4;
 
-    // White text. Build an opaque pixel pattern.
+    // White text.
     const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
     var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
 
@@ -232,7 +237,7 @@ fn drawPromptEditorBar(
         self.prompt_editor_buffer,
         x,
         y,
-        .{ .size = cell_h_f * 0.85, .fill_opts = .{} },
+        .{ .size = cell_h_f * 1.1, .fill_opts = .{} },
     ) catch |err| {
         log.warn("Error rendering prompt editor text: {}", .{err});
     };
