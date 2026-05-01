@@ -217,25 +217,28 @@ fn drawPromptEditorBar(
     if (cols == 0) return;
 
     // -- Geometry & font --
-    // Use the terminal's cell width as the per-glyph advance even for
-    // the editor font. SFNSMono's natural advance is narrower than
-    // Ghostty's terminal cell, but matching cell-width keeps the
-    // editor's column boundaries (and thus caret positions and
-    // line-wrap points) aligned with terminal columns. The result
-    // reads as "this looks like a terminal with magenta highlighting"
-    // rather than "this is a different proportional layer".
+    // Caret X uses the editor font's actual per-glyph advance — that's
+    // what z2d.text.show uses to lay out the rendered glyphs, so the
+    // caret tracks the visible text exactly. Wrap point still uses
+    // terminal cell width (and cols_per_line matches what the
+    // renderer's critical section computed) so the bar's wrapping
+    // aligns with terminal column boundaries.
     const font = self.ensurePromptEditorFont(alloc);
     const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
     const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
     const opts_size: f64 = cell_h_f * 0.85;
     const x_start: f64 = cell_w_f * 0.4;
-    const advance_px: f64 = cell_w_f;
-    _ = advance_px; // not used directly; kept for parity with earlier code path
 
-    // We wrap at the same cols_per_line the renderer's critical
-    // section used when it computed view_top. That value is just
-    // `cols - 1` (one column of padding on the left for the editor's
-    // x_start offset). Match it exactly.
+    const advance_px: f64 = if (font) |f| advance: {
+        const upm: f64 = @floatFromInt(f.meta.units_per_em);
+        const adv: f64 = @floatFromInt(f.meta.advance_width_max);
+        break :advance adv * (opts_size / upm);
+    } else cell_w_f;
+
+    // Wrap at the same cols_per_line the renderer's critical section
+    // used. That value is `cols - 1` (one col of padding on the left
+    // for x_start). Matching it ensures cursor_line/cursor_col here
+    // equal what was computed there.
     const cols_per_line: usize = if (cols >= 2) cols - 1 else 1;
 
     // -- Compute visual lines + caret position --
@@ -347,7 +350,7 @@ fn drawPromptEditorBar(
     {
         const visual_caret_line = lines.cursor_line - first_visible_line;
         const caret_x: f64 = x_start +
-            @as(f64, @floatFromInt(lines.cursor_col)) * cell_w_f;
+            @as(f64, @floatFromInt(lines.cursor_col)) * advance_px;
         const cell_top: f64 = bar_top_f + v_padding_px +
             @as(f64, @floatFromInt(visual_caret_line)) * cell_h_f;
         const caret_top: f64 = cell_top + cell_h_f * 0.1;

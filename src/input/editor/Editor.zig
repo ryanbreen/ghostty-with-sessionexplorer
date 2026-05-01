@@ -137,7 +137,26 @@ pub fn handleKey(
     std.debug.assert(self.state == .active);
 
     // Release events do not interact with the editor at all.
-    if (event.action == .release) return .observed;
+    if (event.action == .release) {
+        log.info("release key={s} utf8len={d}", .{
+            @tagName(event.key),
+            event.utf8.len,
+        });
+        return .observed;
+    }
+    log.info(
+        "handleKey IN key={s} action={s} mods=ctrl:{} alt:{} shift:{} super:{} utf8=\"{s}\" cur={d}",
+        .{
+            @tagName(event.key),
+            @tagName(event.action),
+            event.mods.ctrl,
+            event.mods.alt,
+            event.mods.shift,
+            event.mods.super,
+            event.utf8,
+            self.cursor,
+        },
+    );
 
     // Any path below that returns .consumed or .commit mutates either
     // the cursor or the buffer (or both). Mark cursor_dirty here once
@@ -381,9 +400,19 @@ pub fn applyScroll(self: *Editor, delta: isize) isize {
 /// the editor is active.
 pub fn insertText(self: *Editor, text: []const u8) Allocator.Error!void {
     std.debug.assert(self.state == .active);
+    const before_cursor = self.cursor;
+    const before_len = self.buffer.len();
     try self.buffer.insertAt(self.cursor, text);
     self.cursor += text.len;
     self.cursor_dirty = true;
+    log.info("insertText len={d} cursor: {d}->{d} buf: {d}->{d} preview=\"{s}\"", .{
+        text.len,
+        before_cursor,
+        self.cursor,
+        before_len,
+        self.buffer.len(),
+        if (text.len > 40) text[0..40] else text,
+    });
 }
 
 // -- UTF-8 + word-boundary helpers --
