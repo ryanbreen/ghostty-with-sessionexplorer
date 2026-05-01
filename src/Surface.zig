@@ -5437,6 +5437,24 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             self.renderer_state.mutex.lock();
             defer self.renderer_state.mutex.unlock();
 
+            // If the prompt editor is active and has a buffer, copy
+            // that. The format flag (raw / etc.) is ignored — the
+            // buffer is already plain UTF-8 and not bracketed.
+            if (self.editor.isActive() and self.editor.buffer.len() > 0) {
+                const text = self.editor.buffer.text();
+                const buf = try self.alloc.allocSentinel(u8, text.len, 0);
+                defer self.alloc.free(buf);
+                @memcpy(buf, text);
+                self.rt_surface.setClipboard(.standard, &.{.{
+                    .mime = "text/plain",
+                    .data = buf,
+                }}, false) catch |err| {
+                    log.err("error copying editor buffer err={}", .{err});
+                    return false;
+                };
+                return true;
+            }
+
             if (self.io.terminal.screens.active.selection) |sel| {
                 try self.copySelectionToClipboards(
                     sel,
@@ -6291,6 +6309,21 @@ fn completeClipboardPaste(
     allow_unsafe: bool,
 ) !void {
     if (data.len == 0) return;
+
+    // If the prompt editor is active, route the paste into the editor's
+    // buffer at the cursor instead of sending it to the PTY. This makes
+    // Cmd+V (and OS-level paste, drag-and-drop text, IME commits, etc.)
+    // do the same kind of thing they would in any text input field while
+    // the editor owns the line.
+    {
+        self.renderer_state.mutex.lock();
+        defer self.renderer_state.mutex.unlock();
+        if (self.editor.isActive()) {
+            try self.editor.insertText(data);
+            try self.queueRender();
+            return;
+        }
+    }
 
     const encode_opts: input.paste.Options = encode_opts: {
         self.renderer_state.mutex.lock();

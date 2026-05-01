@@ -77,6 +77,10 @@ prompt_editor_font_loaded: bool = false,
 /// Lifetime is tied to the renderer's per-frame arena.
 prompt_editor_buffer: []const u8 = &.{},
 
+/// Codepoint index of the cursor within `prompt_editor_buffer` for the
+/// current frame. Used to position the visible caret in the bar.
+prompt_editor_cursor: usize = 0,
+
 /// The set of available features and their configuration.
 pub const Feature = union(enum) {
     highlight_hyperlinks,
@@ -125,8 +129,13 @@ pub fn deinit(self: *Overlay, alloc: Allocator) void {
 
 /// Set the prompt editor's buffer snapshot for this frame. Called by
 /// the renderer with an arena-allocated copy before `applyFeatures`.
-pub fn setPromptEditorBuffer(self: *Overlay, buf: []const u8) void {
+pub fn setPromptEditorBuffer(
+    self: *Overlay,
+    buf: []const u8,
+    cursor_codepoint_idx: usize,
+) void {
     self.prompt_editor_buffer = buf;
+    self.prompt_editor_cursor = cursor_codepoint_idx;
 }
 
 /// Returns a pending image that can be used to copy, convert, upload, etc.
@@ -218,38 +227,83 @@ fn drawPromptEditorBar(
         return;
     };
 
-    // Render buffer text on top of the bar.
-    if (self.prompt_editor_buffer.len == 0) return;
+    // Set up shared rendering geometry (used for both text and cursor).
+    const font = self.ensurePromptEditorFont(alloc);
 
-    const font = self.ensurePromptEditorFont(alloc) orelse return;
-
-    // z2d.text.show treats the y argument as the TOP of the em square
-    // (after font scaling), with text extending downward. With a font
-    // size of 0.85 * cell_h, total glyph extent (cap top -> descender)
-    // is about 1.05 * cell_h, which fits comfortably inside our 2-cell
-    // bar. Center vertically by setting y at the upper cell's midpoint.
     const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
     const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
     const bar_top_f: f64 = @as(f64, @floatFromInt(bar_top_row)) * cell_h_f;
     const opts_size: f64 = cell_h_f * 0.85;
-    const x: f64 = cell_w_f * 0.4;
-    const y: f64 = bar_top_f + cell_h_f * 0.45;
+    const x_start: f64 = cell_w_f * 0.4;
+    const text_y: f64 = bar_top_f + cell_h_f * 0.45;
+
+    // Per-glyph advance in pixels for monospace. SFNSMono returns the
+    // same advance for every glyph, so advance_width_max scaled to
+    // opts_size gives us a precise caret position too.
+    const advance_px: f64 = if (font) |f| advance: {
+        const upm: f64 = @floatFromInt(f.meta.units_per_em);
+        const adv: f64 = @floatFromInt(f.meta.advance_width_max);
+        break :advance adv * (opts_size / upm);
+    } else cell_w_f;
+
+    // Render buffer text on top of the bar.
+    const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
+    if (self.prompt_editor_buffer.len > 0) {
+        if (font) |f| {
+            var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
+            z2d.text.show(
+                alloc,
+                &self.surface,
+                &pattern,
+                f,
+                self.prompt_editor_buffer,
+                x_start,
+                text_y,
+                .{ .size = opts_size, .fill_opts = .{} },
+            ) catch |err| {
+                log.warn("Error rendering prompt editor text: {}", .{err});
+            };
+        }
+    }
+
+    // Caret. Drawn even on an empty buffer so the user sees where their
+    // input will land.
+    const caret_x: f64 = x_start + @as(f64, @floatFromInt(
+        self.prompt_editor_cursor,
+    )) * advance_px;
+    self.drawCaret(alloc, caret_x, bar_top_f, cell_h_f) catch |err| {
+        log.warn("Error rendering prompt editor caret: {}", .{err});
+    };
+}
+
+/// Draw a 2-pixel-wide white vertical caret at `(x, bar_top_y)`,
+/// spanning the full 2-cell bar height. Inset 2px top/bottom so the
+/// caret doesn't touch the bar's border.
+fn drawCaret(
+    self: *Overlay,
+    alloc: Allocator,
+    x: f64,
+    bar_top_y: f64,
+    cell_h: f64,
+) !void {
+    const caret_w: f64 = 2.0;
+    const inset: f64 = 2.0;
+    const top: f64 = bar_top_y + inset;
+    const bottom: f64 = bar_top_y + (cell_h * 2.0) - inset;
+
+    var ctx: z2d.Context = .init(alloc, &self.surface);
+    defer ctx.deinit();
+    ctx.setAntiAliasingMode(.none);
+
+    try ctx.moveTo(x, top);
+    try ctx.lineTo(x + caret_w, top);
+    try ctx.lineTo(x + caret_w, bottom);
+    try ctx.lineTo(x, bottom);
+    try ctx.closePath();
 
     const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
-    var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
-
-    z2d.text.show(
-        alloc,
-        &self.surface,
-        &pattern,
-        font,
-        self.prompt_editor_buffer,
-        x,
-        y,
-        .{ .size = opts_size, .fill_opts = .{} },
-    ) catch |err| {
-        log.warn("Error rendering prompt editor text: {}", .{err});
-    };
+    ctx.setSourceToPixel(white);
+    try ctx.fill();
 }
 
 /// Lazily load the prompt editor's render font. macOS-only path for now.

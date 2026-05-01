@@ -1163,6 +1163,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 /// frame. Cloned into arena_alloc so it outlives the lock
                 /// release. Empty when the editor is inactive or absent.
                 prompt_editor_buffer: []const u8,
+                /// Codepoint index of the editor's cursor for this
+                /// frame. Used by the overlay to draw the caret.
+                prompt_editor_cursor: usize,
             };
 
             // Update all our data as tightly as possible within the mutex.
@@ -1286,15 +1289,22 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     break :overlay features.items;
                 };
 
-                // Snapshot the prompt editor's buffer text for this frame.
-                // The pointer in `state.prompt_editor` is stable for the
-                // surface's lifetime; we still hold the mutex here so the
-                // buffer's contents won't be mutated mid-clone.
-                const prompt_editor_buffer: []const u8 = pe: {
-                    if (!state.prompt_editor_active) break :pe "";
-                    const ed = state.prompt_editor orelse break :pe "";
-                    break :pe arena_alloc.dupe(u8, ed.buffer.text()) catch "";
-                };
+                // Snapshot the prompt editor's buffer text and cursor
+                // for this frame. The pointer in `state.prompt_editor`
+                // is stable for the surface's lifetime; we still hold
+                // the mutex here so the buffer's contents won't be
+                // mutated mid-clone.
+                var prompt_editor_buffer: []const u8 = "";
+                var prompt_editor_cursor: usize = 0;
+                if (state.prompt_editor_active) {
+                    if (state.prompt_editor) |ed| {
+                        prompt_editor_buffer = arena_alloc.dupe(
+                            u8,
+                            ed.buffer.text(),
+                        ) catch "";
+                        prompt_editor_cursor = ed.cursorCodepointIndex();
+                    }
+                }
 
                 break :critical .{
                     .links = links,
@@ -1303,6 +1313,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .scrollbar = scrollbar,
                     .overlay_features = overlay_features,
                     .prompt_editor_buffer = prompt_editor_buffer,
+                    .prompt_editor_cursor = prompt_editor_cursor,
                 };
             };
 
@@ -1376,6 +1387,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.rebuildOverlay(
                 critical.overlay_features,
                 critical.prompt_editor_buffer,
+                critical.prompt_editor_cursor,
             ) catch |err| {
                 log.warn(
                     "error rebuilding overlay surface err={}",
@@ -2255,6 +2267,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self: *Self,
             features: []const Overlay.Feature,
             prompt_editor_buffer: []const u8,
+            prompt_editor_cursor: usize,
         ) Overlay.InitError!void {
             // const start = std.time.Instant.now() catch unreachable;
             // const start_micro = std.time.microTimestamp();
@@ -2313,7 +2326,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.overlay = new;
                 break :overlay &self.overlay.?;
             };
-            overlay.setPromptEditorBuffer(prompt_editor_buffer);
+            overlay.setPromptEditorBuffer(prompt_editor_buffer, prompt_editor_cursor);
             overlay.applyFeatures(
                 alloc,
                 &self.terminal_state,
