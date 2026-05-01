@@ -157,8 +157,10 @@ pub fn handleKey(
         return .consumed;
     }
 
-    // Ctrl+A / Ctrl+E (emacs-style line start/end). Common enough at the
-    // shell prompt that we want them to work in the editor too.
+    // Ctrl chords. A/E for emacs-style line start/end. C clears the
+    // editor's buffer and lets \x03 fall through to the shell so the
+    // shell aborts and prints a fresh prompt — matches the muscle
+    // memory of "Ctrl+C abandons what I was typing".
     if (event.mods.ctrl and !event.mods.alt and !event.mods.super) {
         switch (event.key) {
             .key_a => {
@@ -168,6 +170,15 @@ pub fn handleKey(
             .key_e => {
                 self.cursor = self.buffer.len();
                 return .consumed;
+            },
+            .key_c => {
+                self.buffer.clear();
+                self.cursor = 0;
+                // Return .observed so encodeKey still ships \x03 to
+                // the PTY. The shell's SIGINT handler prints a fresh
+                // prompt; the next keystroke's activate cycle will
+                // reset us cleanly on that new prompt.
+                return .observed;
             },
             else => {},
         }
@@ -278,19 +289,6 @@ fn wordBoundaryForward(buf: []const u8, offset: usize) usize {
     return i;
 }
 
-/// Number of UTF-8 codepoints between `0` and `cursor`. Used by the
-/// renderer to position the visible cursor caret. Returns 0 for an
-/// empty buffer.
-pub fn cursorCodepointIndex(self: *const Editor) usize {
-    const buf = self.buffer.text();
-    var i: usize = 0;
-    var count: usize = 0;
-    while (i < self.cursor) {
-        i = nextCodepointBoundary(buf, i);
-        count += 1;
-    }
-    return count;
-}
 
 test "Editor: starts inactive when disabled" {
     const testing = std.testing;

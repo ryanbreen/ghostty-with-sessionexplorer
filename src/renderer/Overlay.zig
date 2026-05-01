@@ -77,8 +77,9 @@ prompt_editor_font_loaded: bool = false,
 /// Lifetime is tied to the renderer's per-frame arena.
 prompt_editor_buffer: []const u8 = &.{},
 
-/// Codepoint index of the cursor within `prompt_editor_buffer` for the
-/// current frame. Used to position the visible caret in the bar.
+/// Byte offset of the cursor within `prompt_editor_buffer` for the
+/// current frame. The overlay uses this together with `\n` characters
+/// and column-overflow wrapping to compute the caret's visual line+col.
 prompt_editor_cursor: usize = 0,
 
 /// The set of available features and their configuration.
@@ -129,13 +130,15 @@ pub fn deinit(self: *Overlay, alloc: Allocator) void {
 
 /// Set the prompt editor's buffer snapshot for this frame. Called by
 /// the renderer with an arena-allocated copy before `applyFeatures`.
+/// `cursor_byte` is the byte offset within `buf` of the editor's cursor
+/// (always on a UTF-8 codepoint boundary).
 pub fn setPromptEditorBuffer(
     self: *Overlay,
     buf: []const u8,
-    cursor_codepoint_idx: usize,
+    cursor_byte: usize,
 ) void {
     self.prompt_editor_buffer = buf;
-    self.prompt_editor_cursor = cursor_codepoint_idx;
+    self.prompt_editor_cursor = cursor_byte;
 }
 
 /// Returns a pending image that can be used to copy, convert, upload, etc.
@@ -179,20 +182,26 @@ pub fn applyFeatures(
     };
 }
 
-/// Draw the prompt editor's bottom-rows indicator. A 2-cell-tall bar
-/// painted with a near-opaque magenta fill, sitting one row above the
-/// viewport's bottom (so the entire bar is comfortably visible — macOS
-/// window chrome can otherwise eat the very-bottom row). Editor buffer
-/// text is rendered in white inside the bar.
+/// Maximum height of the prompt-editor bar in cells. If the buffer
+/// wraps to more lines than this, we show the tail (last `max` lines)
+/// — the caret tracks naturally with that since it usually sits near
+/// the end of what the user just typed.
+const prompt_editor_max_lines: usize = 10;
+
+/// Draw the prompt editor's indicator bar pinned to the bottom of the
+/// viewport. Height grows with the buffer's wrapped line count (min 1
+/// content line + 1 cell of padding-ish, capped at
+/// `prompt_editor_max_lines` rows). One row of breathing room is left
+/// between the bar's bottom and the viewport's bottom so the bar isn't
+/// clipped by macOS window chrome.
 fn drawPromptEditorBar(
     self: *Overlay,
     alloc: Allocator,
     state: *const terminal.RenderState,
 ) void {
     const row_count = state.row_data.len;
-    const bar_height_cells: usize = 2;
     const bottom_padding_cells: usize = 1;
-    if (row_count < bar_height_cells + bottom_padding_cells) return;
+    if (row_count < 2 + bottom_padding_cells) return;
 
     const cols = blk: {
         const row_slice = state.row_data.slice();
@@ -202,18 +211,59 @@ fn drawPromptEditorBar(
     };
     if (cols == 0) return;
 
-    const bar_top_row = row_count - bar_height_cells - bottom_padding_cells;
-    const border = Color.prompt_editor.rectBorder();
+    // -- Geometry & font --
+    const font = self.ensurePromptEditorFont(alloc);
+    const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
+    const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
+    const opts_size: f64 = cell_h_f * 0.85;
+    const x_start: f64 = cell_w_f * 0.4;
 
-    // Use a high-alpha (near opaque) fill so the bar reads clearly even
-    // against arbitrary terminal output behind it. The standard
-    // rectFill (alpha 96 / 38%) is too faint at editor sizes.
+    // Per-glyph advance for our editor font.
+    const advance_px: f64 = if (font) |f| advance: {
+        const upm: f64 = @floatFromInt(f.meta.units_per_em);
+        const adv: f64 = @floatFromInt(f.meta.advance_width_max);
+        break :advance adv * (opts_size / upm);
+    } else cell_w_f;
+
+    // How many editor-font glyphs fit between x_start and the right
+    // edge of the viewport. We hard-wrap at this width so text never
+    // runs off the right side of the bar.
+    const total_width_px: f64 = @as(f64, @floatFromInt(cols)) * cell_w_f;
+    const usable_px: f64 = total_width_px - x_start - cell_w_f * 0.4;
+    const cols_per_line: usize = blk: {
+        if (advance_px <= 0) break :blk 1;
+        const fit: f64 = usable_px / advance_px;
+        if (fit < 1.0) break :blk 1;
+        break :blk @intFromFloat(fit);
+    };
+
+    // -- Compute visual lines + caret position --
+    const lines = self.computeVisualLines(
+        alloc,
+        cols_per_line,
+    ) catch return;
+    defer alloc.free(lines.starts);
+
+    // Bar height: number of visible content rows + 1 row of internal
+    // padding (so descenders aren't tight against the bottom border).
+    const visible_lines = @min(lines.line_count, prompt_editor_max_lines);
+    const first_visible_line = if (lines.line_count > prompt_editor_max_lines)
+        lines.line_count - prompt_editor_max_lines
+    else
+        0;
+    const bar_height_cells = @max(2, visible_lines + 1);
+    if (row_count < bar_height_cells + bottom_padding_cells) return;
+
+    const bar_top_row = row_count - bar_height_cells - bottom_padding_cells;
+    const bar_top_f: f64 = @as(f64, @floatFromInt(bar_top_row)) * cell_h_f;
+
+    // -- Bar background --
+    const border = Color.prompt_editor.rectBorder();
     const fill: z2d.Pixel = blk: {
         var rgba: z2d.pixel.RGBA = .fromPixel(Color.prompt_editor.pixel());
         rgba.a = 230;
         break :blk rgba.multiply().asPixel();
     };
-
     self.highlightGridRect(
         alloc,
         0,
@@ -227,38 +277,39 @@ fn drawPromptEditorBar(
         return;
     };
 
-    // Set up shared rendering geometry (used for both text and cursor).
-    const font = self.ensurePromptEditorFont(alloc);
-
-    const cell_w_f: f64 = @floatFromInt(self.cell_size.width);
-    const cell_h_f: f64 = @floatFromInt(self.cell_size.height);
-    const bar_top_f: f64 = @as(f64, @floatFromInt(bar_top_row)) * cell_h_f;
-    const opts_size: f64 = cell_h_f * 0.85;
-    const x_start: f64 = cell_w_f * 0.4;
-    const text_y: f64 = bar_top_f + cell_h_f * 0.45;
-
-    // Per-glyph advance in pixels for monospace. SFNSMono returns the
-    // same advance for every glyph, so advance_width_max scaled to
-    // opts_size gives us a precise caret position too.
-    const advance_px: f64 = if (font) |f| advance: {
-        const upm: f64 = @floatFromInt(f.meta.units_per_em);
-        const adv: f64 = @floatFromInt(f.meta.advance_width_max);
-        break :advance adv * (opts_size / upm);
-    } else cell_w_f;
-
-    // Render buffer text on top of the bar.
+    // -- Text per visible line --
     const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
-    if (self.prompt_editor_buffer.len > 0) {
-        if (font) |f| {
-            var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
+    if (font) |f| {
+        var pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = white } };
+
+        var visual_idx: usize = 0;
+        while (visual_idx < visible_lines) : (visual_idx += 1) {
+            const line_idx = first_visible_line + visual_idx;
+            const start = lines.starts[line_idx];
+            const end = if (line_idx + 1 < lines.starts.len)
+                lines.starts[line_idx + 1]
+            else
+                self.prompt_editor_buffer.len;
+
+            // Slice this line's bytes, stripping a trailing newline.
+            var line_slice = self.prompt_editor_buffer[start..end];
+            if (line_slice.len > 0 and line_slice[line_slice.len - 1] == '\n') {
+                line_slice = line_slice[0 .. line_slice.len - 1];
+            }
+            if (line_slice.len == 0) continue;
+
+            const line_y: f64 = bar_top_f +
+                @as(f64, @floatFromInt(visual_idx)) * cell_h_f +
+                cell_h_f * 0.45;
+
             z2d.text.show(
                 alloc,
                 &self.surface,
                 &pattern,
                 f,
-                self.prompt_editor_buffer,
+                line_slice,
                 x_start,
-                text_y,
+                line_y,
                 .{ .size = opts_size, .fill_opts = .{} },
             ) catch |err| {
                 log.warn("Error rendering prompt editor text: {}", .{err});
@@ -266,30 +317,103 @@ fn drawPromptEditorBar(
         }
     }
 
-    // Caret. Drawn even on an empty buffer so the user sees where their
-    // input will land.
-    const caret_x: f64 = x_start + @as(f64, @floatFromInt(
-        self.prompt_editor_cursor,
-    )) * advance_px;
-    self.drawCaret(alloc, caret_x, bar_top_f, cell_h_f) catch |err| {
-        log.warn("Error rendering prompt editor caret: {}", .{err});
+    // -- Caret --
+    // Compute caret line + column (visual). Drawn even on empty buffer.
+    if (lines.cursor_line >= first_visible_line and
+        lines.cursor_line < first_visible_line + visible_lines)
+    {
+        const visual_caret_line = lines.cursor_line - first_visible_line;
+        const caret_x: f64 = x_start +
+            @as(f64, @floatFromInt(lines.cursor_col)) * advance_px;
+        const caret_top: f64 = bar_top_f +
+            @as(f64, @floatFromInt(visual_caret_line)) * cell_h_f + 2.0;
+        const caret_bottom: f64 = caret_top + cell_h_f - 4.0;
+        self.drawCaret(alloc, caret_x, caret_top, caret_bottom) catch |err| {
+            log.warn("Error rendering prompt editor caret: {}", .{err});
+        };
+    }
+}
+
+const VisualLines = struct {
+    /// Byte offsets where each visual line starts. Length is the number
+    /// of lines.
+    starts: []usize,
+    line_count: usize,
+    cursor_line: usize,
+    cursor_col: usize,
+};
+
+/// Walk the buffer, splitting into visual lines on `\n` and at every
+/// `cols_per_line` codepoints. Also locates the cursor's (line, col).
+/// Caller owns `result.starts` (allocated from `alloc`).
+fn computeVisualLines(
+    self: *Overlay,
+    alloc: Allocator,
+    cols_per_line: usize,
+) !VisualLines {
+    const buf = self.prompt_editor_buffer;
+    const cursor = self.prompt_editor_cursor;
+
+    var starts: std.ArrayListUnmanaged(usize) = .empty;
+    errdefer starts.deinit(alloc);
+
+    try starts.append(alloc, 0);
+
+    var col: usize = 0;
+    var i: usize = 0;
+    var cursor_line: usize = 0;
+    var cursor_col: usize = 0;
+    var cursor_assigned = false;
+
+    while (i < buf.len) {
+        if (i == cursor and !cursor_assigned) {
+            cursor_line = starts.items.len - 1;
+            cursor_col = col;
+            cursor_assigned = true;
+        }
+
+        if (buf[i] == '\n') {
+            i += 1;
+            try starts.append(alloc, i);
+            col = 0;
+            continue;
+        }
+
+        // Walk to next codepoint boundary.
+        var n: usize = i + 1;
+        while (n < buf.len and (buf[n] & 0xC0) == 0x80) : (n += 1) {}
+
+        col += 1;
+        if (col >= cols_per_line) {
+            try starts.append(alloc, n);
+            col = 0;
+        }
+        i = n;
+    }
+    if (!cursor_assigned) {
+        cursor_line = starts.items.len - 1;
+        cursor_col = col;
+    }
+
+    const owned = try starts.toOwnedSlice(alloc);
+    return .{
+        .starts = owned,
+        .line_count = owned.len,
+        .cursor_line = cursor_line,
+        .cursor_col = cursor_col,
     };
 }
 
-/// Draw a 2-pixel-wide white vertical caret at `(x, bar_top_y)`,
-/// spanning the full 2-cell bar height. Inset 2px top/bottom so the
-/// caret doesn't touch the bar's border.
+/// Draw a 2-pixel-wide white vertical caret at `x`, between `top` and
+/// `bottom` pixel-y coordinates.
 fn drawCaret(
     self: *Overlay,
     alloc: Allocator,
     x: f64,
-    bar_top_y: f64,
-    cell_h: f64,
+    top: f64,
+    bottom: f64,
 ) !void {
     const caret_w: f64 = 2.0;
-    const inset: f64 = 2.0;
-    const top: f64 = bar_top_y + inset;
-    const bottom: f64 = bar_top_y + (cell_h * 2.0) - inset;
 
     var ctx: z2d.Context = .init(alloc, &self.surface);
     defer ctx.deinit();

@@ -1163,8 +1163,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 /// frame. Cloned into arena_alloc so it outlives the lock
                 /// release. Empty when the editor is inactive or absent.
                 prompt_editor_buffer: []const u8,
-                /// Codepoint index of the editor's cursor for this
-                /// frame. Used by the overlay to draw the caret.
+                /// Byte offset of the editor's cursor for this frame
+                /// (within prompt_editor_buffer). The overlay uses
+                /// this to compute the caret's visual line+col after
+                /// applying line-wrap.
                 prompt_editor_cursor: usize,
             };
 
@@ -1302,7 +1304,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             u8,
                             ed.buffer.text(),
                         ) catch "";
-                        prompt_editor_cursor = ed.cursorCodepointIndex();
+                        prompt_editor_cursor = ed.cursor;
                     }
                 }
 
