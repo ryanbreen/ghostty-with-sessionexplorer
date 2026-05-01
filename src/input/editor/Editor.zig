@@ -137,26 +137,7 @@ pub fn handleKey(
     std.debug.assert(self.state == .active);
 
     // Release events do not interact with the editor at all.
-    if (event.action == .release) {
-        log.info("release key={s} utf8len={d}", .{
-            @tagName(event.key),
-            event.utf8.len,
-        });
-        return .observed;
-    }
-    log.info(
-        "handleKey IN key={s} action={s} mods=ctrl:{} alt:{} shift:{} super:{} utf8=\"{s}\" cur={d}",
-        .{
-            @tagName(event.key),
-            @tagName(event.action),
-            event.mods.ctrl,
-            event.mods.alt,
-            event.mods.shift,
-            event.mods.super,
-            event.utf8,
-            self.cursor,
-        },
-    );
+    if (event.action == .release) return .observed;
 
     // Any path below that returns .consumed or .commit mutates either
     // the cursor or the buffer (or both). Mark cursor_dirty here once
@@ -180,7 +161,6 @@ pub fn handleKey(
 
     // Left arrow: previous codepoint. Cmd+Left → start, Alt+Left → word.
     if (event.key == .arrow_left) {
-        const before = self.cursor;
         if (event.mods.super) {
             self.cursor = 0;
         } else if (event.mods.alt) {
@@ -188,17 +168,11 @@ pub fn handleKey(
         } else {
             self.cursor = prevCodepointBoundary(self.buffer.text(), self.cursor);
         }
-        log.info("arrow_left cursor: {d}->{d} action={s}", .{
-            before,
-            self.cursor,
-            @tagName(event.action),
-        });
         return .consumed;
     }
 
     // Right arrow: next codepoint. Cmd+Right → end, Alt+Right → word.
     if (event.key == .arrow_right) {
-        const before = self.cursor;
         if (event.mods.super) {
             self.cursor = self.buffer.len();
         } else if (event.mods.alt) {
@@ -206,11 +180,6 @@ pub fn handleKey(
         } else {
             self.cursor = nextCodepointBoundary(self.buffer.text(), self.cursor);
         }
-        log.info("arrow_right cursor: {d}->{d} action={s}", .{
-            before,
-            self.cursor,
-            @tagName(event.action),
-        });
         return .consumed;
     }
 
@@ -330,34 +299,13 @@ pub fn handleKey(
 
     // Anything that produced printable UTF-8 gets inserted at the cursor.
     if (event.utf8.len > 0) {
-        const before_cursor = self.cursor;
-        const before_len = self.buffer.len();
         try self.buffer.insertAt(self.cursor, event.utf8);
         self.cursor += event.utf8.len;
-        log.info("insert utf8=\"{s}\" len={d} action={s} key={s} cursor: {d}->{d} buf: {d}->{d}", .{
-            event.utf8,
-            event.utf8.len,
-            @tagName(event.action),
-            @tagName(event.key),
-            before_cursor,
-            self.cursor,
-            before_len,
-            self.buffer.len(),
-        });
         return .consumed;
     }
 
     // Modifier-only events, function keys, anything we don't yet
     // handle — fall through so existing Ghostty machinery can decide.
-    log.info("observed key={s} action={s} mods=ctrl:{} alt:{} shift:{} super:{} utf8len={d}", .{
-        @tagName(event.key),
-        @tagName(event.action),
-        event.mods.ctrl,
-        event.mods.alt,
-        event.mods.shift,
-        event.mods.super,
-        event.utf8.len,
-    });
     return .observed;
 }
 
@@ -400,19 +348,9 @@ pub fn applyScroll(self: *Editor, delta: isize) isize {
 /// the editor is active.
 pub fn insertText(self: *Editor, text: []const u8) Allocator.Error!void {
     std.debug.assert(self.state == .active);
-    const before_cursor = self.cursor;
-    const before_len = self.buffer.len();
     try self.buffer.insertAt(self.cursor, text);
     self.cursor += text.len;
     self.cursor_dirty = true;
-    log.info("insertText len={d} cursor: {d}->{d} buf: {d}->{d} preview=\"{s}\"", .{
-        text.len,
-        before_cursor,
-        self.cursor,
-        before_len,
-        self.buffer.len(),
-        if (text.len > 40) text[0..40] else text,
-    });
 }
 
 // -- UTF-8 + word-boundary helpers --
