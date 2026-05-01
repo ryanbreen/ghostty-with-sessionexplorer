@@ -2803,6 +2803,34 @@ pub fn keyCallback(
         event,
         if (insp_ev) |*ev| ev else null,
     )) |v| return v;
+
+    // Prompt editor (EXPERIMENTAL). Phase 1 is shadow-capture: the editor
+    // observes keystrokes when the cursor is in a shell input region (per
+    // OSC 133 semantic state), records the buffer, and logs on Enter. The
+    // keystroke is NOT intercepted — it still flows to the PTY normally.
+    // Subsequent phases will add interception, rendering, and editing.
+    if (self.config.prompt_editor) prompt_editor: {
+        self.renderer_state.mutex.lock();
+        defer self.renderer_state.mutex.unlock();
+
+        const cursor = &self.io.terminal.screens.active.cursor;
+        const in_input_region = cursor.semantic_content == .input;
+
+        if (in_input_region and !self.editor.isActive()) {
+            self.editor.activate();
+            self.renderer_state.prompt_editor_active = true;
+        } else if (!in_input_region and self.editor.isActive()) {
+            self.editor.deactivate();
+            self.renderer_state.prompt_editor_active = false;
+        }
+
+        if (!self.editor.isActive()) break :prompt_editor;
+
+        _ = self.editor.handleKey(event) catch |err| {
+            log.warn("prompt editor handleKey err={}", .{err});
+        };
+    }
+
     // If we allow KAM and KAM is enabled then we do nothing.
     if (self.config.vt_kam_allowed) {
         self.renderer_state.mutex.lock();

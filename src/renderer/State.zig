@@ -30,6 +30,11 @@ preedit: ?Preedit = null,
 /// need about the mouse.
 mouse: Mouse = .{},
 
+/// True when the prompt editor (Surface.editor) is active. The renderer
+/// uses this to draw the editor's indicator at the bottom of the
+/// viewport. Updated by Surface under `mutex`.
+prompt_editor_active: bool = false,
+
 pub const Mouse = struct {
     /// The point on the viewport where the mouse currently is. We use
     /// viewport points to avoid the complexity of mapping the mouse to

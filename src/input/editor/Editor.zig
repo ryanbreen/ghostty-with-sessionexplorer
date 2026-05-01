@@ -13,6 +13,7 @@ const Editor = @This();
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const input = @import("../../input.zig");
 
 const Buffer = @import("Buffer.zig");
 
@@ -26,6 +27,20 @@ pub const State = enum {
     /// editor renders the buffer contents in the bottom N rows of the
     /// viewport.
     active,
+};
+
+/// What handleKey reports back to the caller. In Phase 1 (shadow mode),
+/// the editor never claims a key — keystrokes still flow to the PTY.
+/// Subsequent phases will add `.consumed` to suppress PTY writes.
+pub const Effect = enum {
+    /// Key was recorded into the buffer (or ignored). Caller should
+    /// continue normal handling — the keystroke still goes to the PTY.
+    observed,
+
+    /// Buffer was committed (Enter received). Caller should continue
+    /// normal handling so the Enter reaches the shell. The buffer is
+    /// cleared.
+    committed,
 };
 
 alloc: Allocator,
@@ -67,6 +82,56 @@ pub fn deactivate(self: *Editor) void {
 /// Returns true if the editor is currently intercepting input.
 pub fn isActive(self: *const Editor) bool {
     return self.state == .active;
+}
+
+/// Process a key event. In Phase 1 this is shadow-capture only: the
+/// editor records typing into its buffer but never claims the keystroke,
+/// so the shell still sees and echoes the key as usual. The buffer is
+/// logged on Enter and cleared.
+///
+/// Returns `.observed` for normal capture, `.committed` when the buffer
+/// reaches a commit point. Caller continues normal key handling in both
+/// cases.
+pub fn handleKey(
+    self: *Editor,
+    event: input.KeyEvent,
+) Allocator.Error!Effect {
+    std.debug.assert(self.state == .active);
+
+    // We only act on press / repeat; release events are ignored.
+    if (event.action != .press and event.action != .repeat) return .observed;
+
+    // Enter (no mods) commits the buffer.
+    if (event.key == .enter and event.mods.empty()) {
+        log.info("commit buffer=\"{s}\" len={d}", .{
+            self.buffer.text(),
+            self.buffer.len(),
+        });
+        self.buffer.clear();
+        return .committed;
+    }
+
+    // Backspace removes the last byte. UTF-8 codepoint-aware deletion
+    // is Phase 2; for now ASCII-correct + best-effort on multi-byte.
+    if (event.key == .backspace and event.mods.empty()) {
+        if (self.buffer.len() > 0) {
+            self.buffer.deleteRange(self.buffer.len() - 1, 1);
+        }
+        return .observed;
+    }
+
+    // Escape clears the buffer (treat as cancel).
+    if (event.key == .escape and event.mods.empty()) {
+        self.buffer.clear();
+        return .observed;
+    }
+
+    // Anything that produced printable UTF-8 gets appended.
+    if (event.utf8.len > 0) {
+        try self.buffer.insertAt(self.buffer.len(), event.utf8);
+    }
+
+    return .observed;
 }
 
 test "Editor: starts inactive when disabled" {

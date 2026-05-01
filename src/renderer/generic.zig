@@ -1263,11 +1263,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 };
 
                 const overlay_features: []const Overlay.Feature = overlay: {
-                    const insp = state.inspector orelse break :overlay &.{};
-                    const renderer_info = insp.rendererInfo();
-                    break :overlay renderer_info.overlayFeatures(
-                        arena_alloc,
-                    ) catch &.{};
+                    var features: std.ArrayListUnmanaged(Overlay.Feature) = .empty;
+
+                    if (state.inspector) |insp| {
+                        const renderer_info = insp.rendererInfo();
+                        const insp_features = renderer_info.overlayFeatures(
+                            arena_alloc,
+                        ) catch &.{};
+                        features.appendSlice(arena_alloc, insp_features) catch
+                            break :overlay &.{};
+                    }
+
+                    if (state.prompt_editor_active) {
+                        features.append(arena_alloc, .prompt_editor) catch
+                            break :overlay features.items;
+                    }
+
+                    break :overlay features.items;
                 };
 
                 break :critical .{

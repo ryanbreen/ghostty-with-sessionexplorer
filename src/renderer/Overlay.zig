@@ -28,12 +28,14 @@ pub const Color = enum {
     hyperlink, // light blue
     semantic_prompt, // orange/gold
     semantic_input, // cyan
+    prompt_editor, // magenta — distinct so the editor bar reads as ours
 
     pub fn rgb(self: Color) z2d.pixel.RGB {
         return switch (self) {
             .hyperlink => .{ .r = 180, .g = 180, .b = 255 },
             .semantic_prompt => .{ .r = 255, .g = 200, .b = 64 },
             .semantic_input => .{ .r = 64, .g = 200, .b = 255 },
+            .prompt_editor => .{ .r = 220, .g = 80, .b = 220 },
         };
     }
 
@@ -69,6 +71,10 @@ cell_size: CellSize,
 pub const Feature = union(enum) {
     highlight_hyperlinks,
     semantic_prompts,
+    /// Draw the prompt editor's bottom-row indicator. Used while the
+    /// `Surface.editor` is active (prompt-editor config enabled and the
+    /// shell cursor is in an OSC 133 input region).
+    prompt_editor,
 };
 
 pub const InitError = Allocator.Error || error{
@@ -143,6 +149,43 @@ pub fn applyFeatures(
             alloc,
             state,
         ),
+        .prompt_editor => self.drawPromptEditorBar(alloc, state),
+    };
+}
+
+/// Draw the prompt editor's bottom-row indicator: a translucent magenta
+/// bar across the entire bottom row of the viewport. Phase 1 visual
+/// signal that the editor is active. The bar is replaced by real editor
+/// rendering in subsequent phases.
+fn drawPromptEditorBar(
+    self: *Overlay,
+    alloc: Allocator,
+    state: *const terminal.RenderState,
+) void {
+    const row_count = state.row_data.len;
+    if (row_count == 0) return;
+
+    const cols = blk: {
+        const row_slice = state.row_data.slice();
+        const cells = row_slice.items(.cells);
+        if (cells.len == 0) break :blk @as(usize, 0);
+        break :blk cells[0].slice().items(.raw).len;
+    };
+    if (cols == 0) return;
+
+    const border = Color.prompt_editor.rectBorder();
+    const fill = Color.prompt_editor.rectFill();
+
+    self.highlightGridRect(
+        alloc,
+        0,
+        row_count - 1,
+        cols,
+        1,
+        border,
+        fill,
+    ) catch |err| {
+        log.warn("Error drawing prompt editor bar: {}", .{err});
     };
 }
 
