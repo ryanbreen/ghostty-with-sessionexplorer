@@ -82,6 +82,14 @@ prompt_editor_buffer: []const u8 = &.{},
 /// and column-overflow wrapping to compute the caret's visual line+col.
 prompt_editor_cursor: usize = 0,
 
+/// Sticky scroll position: the buffer-line index that's currently the
+/// FIRST visible line in the bar. Persists across frames so the bar
+/// only scrolls when the caret would otherwise leave the visible
+/// window — Up arrow within an already-visible region just moves the
+/// caret without moving the surrounding text. Reset to 0 when the
+/// buffer is empty (i.e. activate / commitDone / Ctrl+C / Escape).
+prompt_editor_view_top: usize = 0,
+
 /// The set of available features and their configuration.
 pub const Feature = union(enum) {
     highlight_hyperlinks,
@@ -182,18 +190,14 @@ pub fn applyFeatures(
     };
 }
 
-/// Maximum height of the prompt-editor bar in cells. If the buffer
-/// wraps to more lines than this, we show the tail (last `max` lines)
-/// — the caret tracks naturally with that since it usually sits near
-/// the end of what the user just typed.
-const prompt_editor_max_lines: usize = 10;
-
 /// Draw the prompt editor's indicator bar pinned to the bottom of the
-/// viewport. Height grows with the buffer's wrapped line count (min 1
-/// content line + 1 cell of padding-ish, capped at
-/// `prompt_editor_max_lines` rows). One row of breathing room is left
-/// between the bar's bottom and the viewport's bottom so the bar isn't
-/// clipped by macOS window chrome.
+/// viewport. The bar's height is 1:1 with the buffer's wrapped-line
+/// count, capped only by the available viewport rows — there's no
+/// artificial maximum. When the buffer overflows the viewport the
+/// caret-aware view_top scrolls within the bar; to see content above
+/// the editor at that point, scroll the terminal's normal scrollback.
+/// One row of breathing room is left between the bar and the viewport
+/// bottom so macOS window chrome doesn't clip the bar.
 fn drawPromptEditorBar(
     self: *Overlay,
     alloc: Allocator,
@@ -244,25 +248,46 @@ fn drawPromptEditorBar(
     ) catch return;
     defer alloc.free(lines.starts);
 
-    // Number of content lines we'll show this frame.
-    const visible_lines = @min(lines.line_count, prompt_editor_max_lines);
+    // The bar would like to be 1:1 with the buffer's line count, but
+    // it can only physically occupy the available viewport rows. When
+    // the buffer overflows, only the visible_lines tail-or-window of
+    // it renders.
+    const available_rows = row_count - bottom_padding_cells;
+    const visible_lines = @min(lines.line_count, available_rows);
 
-    // Caret-aware scrolling. If the buffer fits, show everything. If it
-    // doesn't, slide the visible window so the cursor's line is the
-    // *last* visible line — the user is almost always editing near the
-    // tail of the buffer, and "cursor at bottom of viewport" matches
-    // typical line-editor / pager behavior. Cmd+Home / arrow-up still
-    // pulls earlier content into view.
-    const first_visible_line: usize = blk: {
-        if (lines.line_count <= prompt_editor_max_lines) break :blk 0;
-        if (lines.cursor_line + 1 <= prompt_editor_max_lines) break :blk 0;
-        break :blk lines.cursor_line + 1 - prompt_editor_max_lines;
-    };
+    // Sticky view_top. If the buffer is empty (typically right after
+    // activate / commitDone / Ctrl+C), reset. Otherwise, only scroll
+    // when the caret moves outside the current visible window — Up
+    // within the visible region moves the caret only, NOT the text.
+    if (self.prompt_editor_buffer.len == 0) {
+        self.prompt_editor_view_top = 0;
+    } else {
+        // Pull view down if the caret moved above the visible top.
+        if (lines.cursor_line < self.prompt_editor_view_top) {
+            self.prompt_editor_view_top = lines.cursor_line;
+        }
+        // Push view up if the caret moved below the visible bottom.
+        const view_bottom_excl = self.prompt_editor_view_top + visible_lines;
+        if (lines.cursor_line + 1 > view_bottom_excl) {
+            self.prompt_editor_view_top = lines.cursor_line + 1 - visible_lines;
+        }
+        // Clamp so we never show empty rows below the buffer's end —
+        // happens when content was deleted or after a buffer shrink
+        // that doesn't otherwise touch the cursor.
+        if (lines.line_count >= visible_lines and
+            self.prompt_editor_view_top + visible_lines > lines.line_count)
+        {
+            self.prompt_editor_view_top = lines.line_count - visible_lines;
+        }
+        if (lines.line_count < visible_lines) {
+            self.prompt_editor_view_top = 0;
+        }
+    }
+    const first_visible_line = self.prompt_editor_view_top;
 
-    // Bar height: at minimum 2 cells so an empty buffer still shows a
-    // visible bar; otherwise just enough cells for the visible lines
-    // (no extra padding row — that left ugly empty space below the
-    // text on short buffers).
+    // Bar height: matches the visible content. Minimum of 2 cells so
+    // an empty buffer (single empty visual line) still shows a real
+    // bar with vertical breathing room around the caret.
     const bar_height_cells = @max(2, visible_lines);
     if (row_count < bar_height_cells + bottom_padding_cells) return;
 
