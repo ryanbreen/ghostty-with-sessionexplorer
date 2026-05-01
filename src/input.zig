@@ -8,6 +8,7 @@ const key_mods = @import("input/key_mods.zig");
 const keyboard = @import("input/keyboard.zig");
 
 pub const command = @import("input/command.zig");
+pub const editor = @import("input/editor.zig");
 pub const function_keys = @import("input/function_keys.zig");
 pub const keycodes = @import("input/keycodes.zig");
 pub const key_encode = @import("input/key_encode.zig");

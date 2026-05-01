@@ -706,6 +706,24 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 @"selection-foreground": ?TerminalColor = null,
 @"selection-background": ?TerminalColor = null,
 
+/// EXPERIMENTAL: Enable the prompt editor.
+///
+/// When enabled and the shell emits OSC 133;B (end-of-prompt), Ghostty
+/// activates a modern editing surface at the active prompt: multi-line
+/// editing, real selection, undo/redo, and system clipboard integration.
+/// On commit (Enter), the editor's buffer is shipped to the PTY and the
+/// editor returns control to the shell.
+///
+/// This is opt-in and EXPERIMENTAL. The editor *replaces* the shell's
+/// own line editor between OSC 133;B and OSC 133;C — features such as
+/// zsh's vi mode, oh-my-zsh autocompletion, and fish autosuggestions
+/// will not fire while the editor owns input. To bypass for a single
+/// command, deactivate via the configured cancel keybind (Esc by default).
+///
+/// Requires shell integration. If OSC 133 is not active, the editor
+/// never activates and Ghostty behaves as a traditional terminal.
+@"prompt-editor": bool = false,
+
 /// Whether to clear selected text when typing. This defaults to `true`.
 /// This is typical behavior for most terminal emulators as well as
 /// text input fields. If you set this to `false`, then the selected text

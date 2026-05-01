@@ -106,6 +106,11 @@ mouse: Mouse,
 /// Keyboard input state.
 keyboard: Keyboard,
 
+/// Prompt editor state. Stays inactive unless the prompt-editor config
+/// is enabled AND OSC 133;B has fired. When active, owns keystroke
+/// interception and renders into the bottom N rows of the viewport.
+editor: input.editor.Editor,
+
 /// A currently pressed key. This is used so that we can send a keyboard
 /// release event when the surface is unfocused. Note that when the surface
 /// is refocused, a key press event may not be sent again -- this depends
@@ -334,6 +339,7 @@ const DerivedConfig = struct {
     fullscreen: configpkg.Fullscreen,
     macos_non_native_fullscreen: configpkg.NonNativeFullscreen,
     macos_option_as_alt: ?input.OptionAsAlt,
+    prompt_editor: bool,
     selection_clear_on_copy: bool,
     selection_clear_on_typing: bool,
     selection_word_chars: []const u21,
@@ -413,6 +419,7 @@ const DerivedConfig = struct {
             .fullscreen = config.fullscreen,
             .macos_non_native_fullscreen = config.@"macos-non-native-fullscreen",
             .macos_option_as_alt = config.@"macos-option-as-alt",
+            .prompt_editor = config.@"prompt-editor",
             .selection_clear_on_copy = config.@"selection-clear-on-copy",
             .selection_clear_on_typing = config.@"selection-clear-on-typing",
             .selection_word_chars = try alloc.dupe(u21, config.@"selection-word-chars".codepoints),
@@ -622,6 +629,7 @@ pub fn init(
         .renderer_thr = undefined,
         .mouse = .{},
         .keyboard = .{},
+        .editor = .init(alloc, derived_config.prompt_editor),
         .io = undefined,
         .io_thread = io_thread,
         .io_thr = undefined,
@@ -843,6 +851,9 @@ pub fn deinit(self: *Surface) void {
     for (self.keyboard.sequence_queued.items) |req| req.deinit();
     self.keyboard.sequence_queued.deinit(self.alloc);
     self.keyboard.table_stack.deinit(self.alloc);
+
+    // Clean up the prompt editor (no-op if never activated)
+    self.editor.deinit();
 
     // Clean up our font grid
     self.app.font_grid_set.deref(self.font_grid_key);
