@@ -1401,6 +1401,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     if (scrollbar.offset >= live_offset) break :blk 0;
                     break :blk live_offset - scrollbar.offset;
                 };
+                // Auto-activate the editor on render when the shell's
+                // cursor is in an input region (OSC 133;B). Without
+                // this, the editor stays inert until the first
+                // keystroke, so the user opens a fresh prompt and
+                // sees nothing — instead of the bar that confirms
+                // the editor is on. Activate lazily here so the bar
+                // appears the moment the prompt is ready.
+                if (state.prompt_editor) |ed| {
+                    if (ed.enabled and !ed.isActive()) {
+                        const cur = state.terminal.screens.active.cursor;
+                        if (cur.semantic_content == .input) {
+                            ed.activate();
+                            state.prompt_editor_active = true;
+                        }
+                    } else if (ed.isActive()) {
+                        const cur = state.terminal.screens.active.cursor;
+                        if (cur.semantic_content != .input) {
+                            ed.deactivate();
+                            state.prompt_editor_active = false;
+                        }
+                    }
+                }
+
                 if (state.prompt_editor_active) {
                     if (state.prompt_editor) |ed| {
                         prompt_editor_buffer = arena_alloc.dupe(

@@ -284,13 +284,17 @@ fn drawPromptEditorBar(
     if (scroll_offset >= visible_lines) return; // bar fully off-screen
     const visible_bar_rows = visible_lines - scroll_offset;
 
-    // Bar height in viewport: the lesser of (visible bar rows after
-    // applying the column-scroll offset) and (rows actually
-    // available). Always at least 1; we don't enforce a 2-row
-    // minimum here because column-scroll gracefully shrinks the bar
-    // toward zero as it scrolls off, and we don't want it to
-    // suddenly snap to 2 rows on the way out.
-    const bar_height_cells = @min(visible_bar_rows, available_rows);
+    // Bar height in viewport. Floor of 2 cells when the bar is at
+    // its NATURAL size (live, scroll_offset == 0) so an empty buffer
+    // still shows a clearly-visible bar — a 1-cell magenta strip at
+    // the very bottom is too easy to miss. When the user is
+    // scrolling the bar out the bottom (scroll_offset > 0) we let
+    // it shrink to 0 gracefully so it doesn't snap to 2 rows on
+    // its way off-screen.
+    const bar_height_cells = if (scroll_offset == 0)
+        @max(2, @min(visible_bar_rows, available_rows))
+    else
+        @min(visible_bar_rows, available_rows);
     if (bar_height_cells == 0) return;
     if (row_count < bar_height_cells + bottom_padding_cells) return;
 
