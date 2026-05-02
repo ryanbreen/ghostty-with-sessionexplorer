@@ -37,8 +37,8 @@ extension Ghostty {
             addSubview(scrollView)
             scrollView.frame = bounds
 
+            textView.owner = owner
             textView.commitHandler = { [weak self] in self?.commit() }
-            textView.yieldHandler = { [weak self] in self?.yieldFocusToTerminal() }
         }
 
         required init?(coder: NSCoder) {
@@ -115,12 +115,15 @@ extension Ghostty {
         }
     }
 
-    /// NSTextView subclass that captures Enter (commit) and Option-Up
-    /// (yield focus to the terminal). All other keys fall through to
-    /// NSTextView's default editing behavior.
+    /// NSTextView subclass that captures Enter (commit). All other keys
+    /// fall through to NSTextView's default editing behavior. Cmd+C is
+    /// overridden so it copies the terminal selection (when present)
+    /// instead of the always-empty editor selection — the editor owns
+    /// typing focus, so Cmd+C from the user's hands needs to do the
+    /// thing the user expects.
     final class PromptEditorTextView: NSTextView {
+        weak var owner: SurfaceView?
         var commitHandler: (() -> Void)?
-        var yieldHandler: (() -> Void)?
 
         override func keyDown(with event: NSEvent) {
             // Plain Return (no modifiers) → commit the buffer.
@@ -132,14 +135,27 @@ extension Ghostty {
                 return
             }
 
-            // Option-Up → hand focus back to the terminal so the user can
-            // hit Ctrl-C / Ctrl-Z / scroll the scrollback / etc.
-            if event.keyCode == 126 && event.modifierFlags.contains(.option) {
-                yieldHandler?()
+            super.keyDown(with: event)
+        }
+
+        override func copy(_ sender: Any?) {
+            // If the terminal has a selection, copy that — the user
+            // can't focus the terminal while the editor is up, so a
+            // Cmd+C with terminal text selected must mean "copy the
+            // terminal text". If no terminal selection, fall through to
+            // NSTextView's default (copies the editor's own selection).
+            if let cSurface = owner?.surface,
+                ghostty_surface_has_selection(cSurface)
+            {
+                let action = "copy_to_clipboard"
+                _ = ghostty_surface_binding_action(
+                    cSurface,
+                    action,
+                    UInt(action.lengthOfBytes(using: .utf8))
+                )
                 return
             }
-
-            super.keyDown(with: event)
+            super.copy(sender)
         }
     }
 }

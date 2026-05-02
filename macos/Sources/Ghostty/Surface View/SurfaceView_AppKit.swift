@@ -672,6 +672,14 @@ extension Ghostty {
             // unless we see the specific scenario below to set it.
             suppressNextLeftMouseUp = false
 
+            // If the prompt editor is visible, NEVER move typing focus to
+            // the terminal — the editor owns input as long as it's up. The
+            // click still flows through (so terminal selection works), it
+            // just doesn't steal first responder from the NSTextView.
+            if let editor = self.promptEditorView, !editor.isHidden {
+                return event
+            }
+
             // If we're already the first responder then no focus transfer is
             // happening, so the click should continue as normal.
             guard window.firstResponder !== self else {
@@ -1083,19 +1091,6 @@ extension Ghostty {
         override func keyDown(with event: NSEvent) {
             guard let surface = self.surface else {
                 self.interpretKeyEvents([event])
-                return
-            }
-
-            // Option-Down with the prompt editor visible: hand focus to
-            // the editor so the user can resume typing without clicking.
-            // Keycode 125 = Down arrow.
-            if event.keyCode == 125 &&
-                event.modifierFlags.contains(.option),
-                let editor = self.promptEditorView,
-                !editor.isHidden,
-                let window = self.window
-            {
-                window.makeFirstResponder(editor.textView)
                 return
             }
 
