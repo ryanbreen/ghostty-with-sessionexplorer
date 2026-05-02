@@ -38,16 +38,16 @@ mouse: Mouse = .{},
 /// `prompt_editor.isActive()` each frame.
 prompt_editor_active: bool = false,
 
-/// Number of cell rows the apprt's native editor view currently
-/// occupies at the bottom of the viewport. Updated by Surface (under
-/// `mutex`) when the apprt calls `ghostty_surface_set_editor_rows`.
-/// The renderer uses this to size the scroll-up reservation so the
-/// terminal's content always sits cleanly above the editor.
+/// Apprt-reported "content" row count for the prompt editor: 1 header
+/// row + N typed input lines. The renderer reads this each frame and
+/// computes the editor's actual reservation as
+/// `max(content_rows, T - cursor.y, 3)`, so a stale apprt value can't
+/// make the editor over-reserve.
 ///
-/// Default of 4 leaves enough room for: 1 header row + 3 input rows.
-/// The apprt overrides this on activate; the default only matters for
-/// the first frame between auto-activation and the apprt's response.
-prompt_editor_rows: u32 = 4,
+/// Default of 3 = the floor (1 header + 2 input). The apprt overrides
+/// this on activate; the default only matters for the first frame
+/// between auto-activation and the apprt's response.
+prompt_editor_rows: u32 = 3,
 
 /// Pointer to the prompt editor on the owning Surface. The renderer
 /// uses this only to fire `activate()` / `deactivate()` based on the

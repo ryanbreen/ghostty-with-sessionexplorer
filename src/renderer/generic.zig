@@ -1349,9 +1349,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     const trows: usize = self.terminal_state.rows;
                     const screen = state.terminal.screens.active;
                     const cur_y: usize = screen.cursor.y;
-                    const content_rows: usize = @max(2, state.prompt_editor_rows);
+                    // `state.prompt_editor_rows` is the apprt-reported
+                    // CONTENT row count (1 header + N typed input
+                    // lines). The renderer applies its own max() each
+                    // frame against the live cursor row, so a stale
+                    // apprt value can't make the editor over-reserve.
+                    // Floor: 3 rows (1 header + 2 input minimum).
+                    const content_rows: usize = @max(3, state.prompt_editor_rows);
                     const available: usize = if (trows > cur_y) trows - cur_y else 1;
-                    const desired_rows: usize = @max(@max(content_rows, available), 2);
+                    const desired_rows: usize = @max(@max(content_rows, available), 3);
                     const editor_top: usize = if (trows > desired_rows)
                         trows - desired_rows
                     else

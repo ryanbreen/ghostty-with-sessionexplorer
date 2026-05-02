@@ -19,10 +19,10 @@ extension Ghostty {
         let textView: PromptEditorTextView
         let headerView: PromptHeaderView
 
-        /// Minimum input rows so the editor never collapses below this
-        /// even when output has filled the viewport. Total floor is
-        /// 1 (header) + this = 2 rows.
-        private static let minInputRows: Int = 1
+        /// Minimum input rows so the editor never collapses below
+        /// usable. Total floor for the editor is 1 header + this =
+        /// 3 rows.
+        private static let minInputRows: Int = 2
 
         /// Cached row count we last reported to libghostty.
         private var reportedRows: Int = 0
@@ -163,34 +163,38 @@ extension Ghostty {
             return ctFont as NSFont
         }
 
-        /// Recompute the editor's row count: max(content rows, available
-        /// space below the cursor, 2). Reports the row count to
-        /// libghostty so the renderer reserves the matching grid rows
-        /// and scrolls the terminal up if needed.
+        /// Recompute the editor's view height and tell libghostty how
+        /// much CONTENT we have (header + typed input lines). The
+        /// renderer applies its own `max(content, T - cursor.y, 3)`
+        /// each frame, so we never report the inflated total — that
+        /// would carry across the commit gap and make the renderer
+        /// over-reserve once the shell prints output and lands the
+        /// next prompt at a higher row.
         func syncHeightToContent() {
             guard let owner else { return }
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
             let inputRows = currentLineCount(cellHeight: cellHeight)
-
             let geom = currentGeometry()
-            let availRows = max(2, Int(geom.avail_rows))
+            let availRows = max(3, Int(geom.avail_rows))
             let bottomPadPoints = currentBottomPaddingPoints()
 
-            // Total = max(content + header, available below cursor).
-            // Floor 2 (header + 1 input).
-            let totalRows = max(max(inputRows + 1, availRows), 2)
-            // Pixel height = cellHeight per row + the renderer's
-            // bottom padding (so the editor view extends down to the
-            // window's bottom edge with no exposed terminal padding).
+            // Local size = max(content+header, available below cursor,
+            // floor). Same formula the renderer applies — they
+            // converge each frame.
+            let totalRows = max(max(inputRows + 1, availRows), 3)
             let desiredHeight = CGFloat(totalRows) * cellHeight + bottomPadPoints
 
             if abs(frame.height - desiredHeight) > 0.5 {
                 layoutAtBottom(in: owner, height: desiredHeight)
             }
-            if totalRows != reportedRows {
-                reportedRows = totalRows
+            // Report ONLY content rows (1 header + N input lines) to
+            // the renderer — never the inflated total. The renderer
+            // takes the live cursor row into account separately.
+            let contentRows = inputRows + 1
+            if contentRows != reportedRows {
+                reportedRows = contentRows
                 if let cSurface = owner.surface {
-                    ghostty_surface_set_editor_rows(cSurface, UInt32(totalRows))
+                    ghostty_surface_set_editor_rows(cSurface, UInt32(contentRows))
                 }
             }
         }
@@ -206,7 +210,7 @@ extension Ghostty {
 
         private func currentGeometry() -> ghostty_editor_geometry_s {
             guard let cSurface = owner?.surface else {
-                return ghostty_editor_geometry_s(avail_rows: 2, bottom_padding_px: 0)
+                return ghostty_editor_geometry_s(avail_rows: 3, bottom_padding_px: 0)
             }
             return ghostty_surface_editor_geometry(cSurface)
         }
