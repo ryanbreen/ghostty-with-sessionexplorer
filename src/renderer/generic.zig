@@ -1308,22 +1308,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
 
                 // Geometry contract: the apprt's native editor view
-                // covers the bottom N rows of the viewport, where N is
-                // the row count the apprt last reported via
-                // `setEditorRows`. We scroll the terminal so the shell
-                // cursor (and the prompt content on its row) ends up
-                // AT `editor_top` — i.e., the topmost reserved row.
-                // The apprt's header bar sits exactly there and
-                // visually covers the prompt, which is what the user
-                // wants: the empty current prompt never appears in the
-                // results panel; the prompt info lives in the editor's
-                // own header.
+                // anchors its TOP edge to the shell's cursor row and
+                // extends down to the viewport bottom. The header bar
+                // (top row of the editor) covers the prompt cells on
+                // the cursor row, so the empty current prompt never
+                // shows up in the results panel above. We size the
+                // reserved row count = max(content rows, available
+                // rows below cursor, 2): when the user has typed many
+                // lines and `set_editor_rows` reports a larger number,
+                // we scroll the terminal up enough to honor that.
                 if (state.prompt_editor_active) {
                     const trows: usize = self.terminal_state.rows;
-                    const desired_rows: usize = @max(1, state.prompt_editor_rows);
+                    const screen = state.terminal.screens.active;
+                    const cur_y: usize = screen.cursor.y;
+                    const content_rows: usize = @max(2, state.prompt_editor_rows);
+                    const available: usize = if (trows > cur_y) trows - cur_y else 1;
+                    const desired_rows: usize = @max(@max(content_rows, available), 2);
                     if (trows > desired_rows) {
-                        const screen = state.terminal.screens.active;
-                        const cur_y: usize = screen.cursor.y;
                         const editor_top: usize = trows - desired_rows;
                         if (cur_y > editor_top) {
                             const shift = cur_y - editor_top;

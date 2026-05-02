@@ -3,25 +3,28 @@ import Combine
 import GhosttyKit
 
 extension Ghostty {
-    /// Native CoreText prompt-editor pinned to the bottom of a SurfaceView.
-    /// Composed of a 1-row header bar (centered prompt info — user@host
-    /// and pwd — plus a 1px hairline at its bottom edge) sitting on top of
-    /// an NSTextView that grows vertically as the user types more lines.
-    /// The header bar visually covers the shell's empty prompt row in the
-    /// terminal grid, so the prompt only ever lives within the editor.
+    /// Native CoreText prompt editor anchored to the bottom of a
+    /// SurfaceView. The view's TOP edge sits at the shell's current
+    /// cursor row (the prompt) and extends down through the viewport's
+    /// bottom edge (including the renderer's bottom padding). The
+    /// editor is composed of a 1-row header strip showing the actual
+    /// shell prompt text + a hairline, and below that an NSTextView for
+    /// input. The header bar visually covers the shell's empty prompt
+    /// row in the terminal grid, so the prompt only ever lives within
+    /// the editor.
     final class PromptEditorView: NSView {
         weak var owner: SurfaceView?
 
         let scrollView: NSScrollView
         let textView: PromptEditorTextView
-
-        /// 1-row-tall header strip at the top of the editor. Carries the
-        /// prompt label centered horizontally + a 1px separator at its
-        /// bottom edge.
         let headerView: PromptHeaderView
 
-        /// Cached row count (header + input) we last reported to libghostty.
-        /// Kept in sync so we only fire `set_editor_rows` when it changes.
+        /// Minimum input rows so the editor never collapses below this
+        /// even when output has filled the viewport. Total floor is
+        /// 1 (header) + this = 2 rows.
+        private static let minInputRows: Int = 1
+
+        /// Cached row count we last reported to libghostty.
         private var reportedRows: Int = 0
 
         /// Combine subscription for owner's pwd changes.
@@ -50,6 +53,8 @@ extension Ghostty {
             textView.isAutomaticTextReplacementEnabled = false
             textView.isAutomaticSpellingCorrectionEnabled = false
             textView.smartInsertDeleteEnabled = false
+            // Match horizontal padding of the header so the typed
+            // text lines up with the prompt label on the left edge.
             textView.textContainerInset = NSSize(width: 4, height: 0)
 
             scrollView.documentView = textView
@@ -61,15 +66,13 @@ extension Ghostty {
                 self?.syncHeightToContent()
             }
 
-            // Re-pull pwd-derived header text whenever the owning surface's
-            // pwd publishes a new value (shell ran `cd`, etc.).
             pwdCancellable = owner.$pwd.sink { [weak self] _ in
                 DispatchQueue.main.async { self?.refreshHeaderText() }
             }
         }
 
         required init?(coder: NSCoder) {
-            fatalError("init(coder:) is not supported")
+            fatalError("init(coter:) is not supported")
         }
 
         override func layout() {
@@ -78,14 +81,25 @@ extension Ghostty {
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
             let h = bounds.height
             let w = bounds.width
-            // Header is the topmost cellHeight; scroll view fills below it.
-            let headerH = cellHeight
-            headerView.frame = NSRect(x: 0, y: h - headerH, width: w, height: headerH)
-            scrollView.frame = NSRect(x: 0, y: 0, width: w, height: max(0, h - headerH))
+            // Bottom padding (in points) we extend down through so the
+            // editor visually meets the window's bottom edge with no
+            // gap. macOS coordinate system is y-up.
+            let bottomPad = currentBottomPaddingPoints()
+            // Header is the topmost cellHeight; scroll fills below it
+            // and through the bottom padding region.
+            let headerY = h - cellHeight
+            headerView.frame = NSRect(x: 0, y: headerY, width: w, height: cellHeight)
+            scrollView.frame = NSRect(x: 0, y: 0, width: w, height: max(0, headerY))
+            // Mark the bottom padding region (within the scrollView)
+            // so it draws the editor background, not exposed terminal.
+            // (NSScrollView draws bg if drawsBackground is true.)
+            _ = bottomPad // height already includes it
         }
 
-        /// Show the bar. Computes initial layout (1 header row + 1 input row),
-        /// pushes the row count to libghostty, and grabs first responder.
+        /// Show the bar. Computes initial layout using the available
+        /// space below the cursor + the content size, pushes the row
+        /// count to libghostty, refreshes the prompt text, and grabs
+        /// first responder.
         func activate(rows: UInt32) {
             guard let owner else { return }
             isHidden = false
@@ -104,8 +118,7 @@ extension Ghostty {
 
         /// Pull theme colors and the terminal's primary font from the
         /// owning surface and push them into the NSTextView and the
-        /// header. Also force the editor's line height to match the
-        /// terminal's cell height so the row math always rounds cleanly.
+        /// header.
         func applyTheme() {
             guard let owner else { return }
             let bg = NSColor(owner.derivedConfig.backgroundColor)
@@ -137,13 +150,9 @@ extension Ghostty {
             }
 
             headerView.applyTheme(bg: bg, fg: fg, accent: caret, font: font)
-            // Re-layout so the header height tracks the new cellHeight.
             needsLayout = true
         }
 
-        /// Borrow a CTFont from libghostty for the terminal's primary
-        /// face and bridge to NSFont. The C function returns a +1 retain
-        /// (it ran copyWithAttributes); we balance with `release()`.
         private func loadTerminalFont(for owner: SurfaceView) -> NSFont {
             let fallback = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
             guard let cSurface = owner.surface else { return fallback }
@@ -154,21 +163,27 @@ extension Ghostty {
             return ctFont as NSFont
         }
 
-        /// Minimum input rows. Empty buffer still shows a chunky input
-        /// area so the user can immediately see "this is where I type"
-        /// rather than a 1-line slit.
-        private static let minInputRows: Int = 3
-
-        /// Recompute the editor's row count from the NSTextView's laid-
-        /// out content height and resize/report if it changed. Total
-        /// reported rows = 1 (header) + lineCount (input), with a
-        /// minimum input floor so the input area is always usable.
+        /// Recompute the editor's row count: max(content rows, available
+        /// space below the cursor, 2). Reports the row count to
+        /// libghostty so the renderer reserves the matching grid rows
+        /// and scrolls the terminal up if needed.
         func syncHeightToContent() {
             guard let owner else { return }
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
             let inputRows = currentLineCount(cellHeight: cellHeight)
-            let totalRows = 1 + inputRows
-            let desiredHeight = CGFloat(totalRows) * cellHeight
+
+            let geom = currentGeometry()
+            let availRows = max(2, Int(geom.avail_rows))
+            let bottomPadPoints = currentBottomPaddingPoints()
+
+            // Total = max(content + header, available below cursor).
+            // Floor 2 (header + 1 input).
+            let totalRows = max(max(inputRows + 1, availRows), 2)
+            // Pixel height = cellHeight per row + the renderer's
+            // bottom padding (so the editor view extends down to the
+            // window's bottom edge with no exposed terminal padding).
+            let desiredHeight = CGFloat(totalRows) * cellHeight + bottomPadPoints
+
             if abs(frame.height - desiredHeight) > 0.5 {
                 layoutAtBottom(in: owner, height: desiredHeight)
             }
@@ -189,12 +204,24 @@ extension Ghostty {
             return max(Self.minInputRows, Int(ceil(used / cellHeight)))
         }
 
+        private func currentGeometry() -> ghostty_editor_geometry_s {
+            guard let cSurface = owner?.surface else {
+                return ghostty_editor_geometry_s(avail_rows: 2, bottom_padding_px: 0)
+            }
+            return ghostty_surface_editor_geometry(cSurface)
+        }
+
+        /// Bottom padding in POINTS. libghostty reports it in pixels;
+        /// divide by the screen's backing scale factor to get points.
+        private func currentBottomPaddingPoints() -> CGFloat {
+            let geom = currentGeometry()
+            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+            return CGFloat(geom.bottom_padding_px) / scale
+        }
+
         /// Pull the shell's actual prompt text out of the terminal cells
-        /// via libghostty and display it in the header. This is the
-        /// EXACT text the shell printed (e.g. `wrb@Mac ~ %`) — matches
-        /// whatever PS1 the user has configured. Falls back to a
-        /// derived `user@host pwd` only if the read fails (editor not
-        /// active yet, cursor at column 0, etc.).
+        /// and display it in the header. Falls back to derived
+        /// `user@host pwd` if the read fails.
         func refreshHeaderText() {
             if let composed = readShellPromptFromTerminal(), !composed.isEmpty {
                 headerView.setText(composed)
@@ -210,8 +237,6 @@ extension Ghostty {
             defer { ghostty_surface_free_text(cSurface, &raw) }
             guard let cstr = raw.text else { return nil }
             let s = String(cString: cstr)
-            // The dump may pad to the row width with spaces — trim
-            // trailing whitespace so the centered label doesn't drift.
             let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }
@@ -240,8 +265,6 @@ extension Ghostty {
             return path
         }
 
-        /// Insert pasted text at the current selection. Called from
-        /// libghostty's editor_paste callback when the editor is visible.
         func insertPasted(_ data: String) {
             guard !data.isEmpty else { return }
             let range = textView.selectedRange()
@@ -280,37 +303,28 @@ extension Ghostty {
         }
     }
 
-    /// 1-row-tall header strip at the top of the prompt editor. Draws the
-    /// terminal's background, a centered text label (user@host pwd), and a
-    /// 1px hairline at its bottom edge separating the header from the
-    /// input area.
+    /// Header strip at the top of the prompt editor. Draws the shell's
+    /// prompt label flush-left + a hairline that extends from the end
+    /// of the label out to the right edge — the line never cuts
+    /// through the text. Vertically the label and hairline share a
+    /// baseline (the line sits just below the text baseline).
     final class PromptHeaderView: NSView {
-        private let label: NSTextField
-        private var separatorColor: NSColor = .separatorColor
+        private var text: String = ""
+        private var labelFont: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        private var labelColor: NSColor = .labelColor
+        private var bgColor: NSColor = .windowBackgroundColor
+        private var lineColor: NSColor = .separatorColor
+
+        /// Horizontal pad on the left edge before the prompt text.
+        private static let leftPad: CGFloat = 4
+        /// Gap between the end of the prompt text and the start of the
+        /// hairline.
+        private static let textLineGap: CGFloat = 8
+        /// Horizontal pad on the right edge after the hairline.
+        private static let rightPad: CGFloat = 8
 
         override init(frame frameRect: NSRect) {
-            self.label = NSTextField(labelWithString: "")
             super.init(frame: frameRect)
-            label.alignment = .center
-            label.lineBreakMode = .byTruncatingMiddle
-            label.usesSingleLineMode = true
-            label.maximumNumberOfLines = 1
-            label.isEditable = false
-            label.isSelectable = false
-            label.isBezeled = false
-            label.isBordered = false
-            label.drawsBackground = false
-            label.backgroundColor = .clear
-            label.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(label)
-            NSLayoutConstraint.activate([
-                label.centerXAnchor.constraint(equalTo: centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: centerYAnchor),
-                label.leadingAnchor.constraint(
-                    greaterThanOrEqualTo: leadingAnchor, constant: 8),
-                label.trailingAnchor.constraint(
-                    lessThanOrEqualTo: trailingAnchor, constant: -8),
-            ])
             wantsLayer = true
         }
 
@@ -319,30 +333,67 @@ extension Ghostty {
         }
 
         func setText(_ s: String) {
-            label.stringValue = s
-        }
-
-        func applyTheme(bg: NSColor, fg: NSColor, accent: NSColor, font: NSFont) {
-            layer?.backgroundColor = bg.cgColor
-            // Slightly dimmer foreground for the header — it's metadata,
-            // not user content. Falls back to fg if mixing fails.
-            label.textColor = fg.withAlphaComponent(0.65)
-            // Match the terminal font but a touch smaller so the header
-            // reads as a label rather than another line of input.
-            let size = max(10, font.pointSize - 1)
-            label.font = NSFont(descriptor: font.fontDescriptor, size: size) ?? font
-            // The hairline at the bottom edge picks up the cursor color
-            // at moderate alpha for visual continuity with the caret.
-            separatorColor = accent.withAlphaComponent(0.5)
+            text = s
             needsDisplay = true
         }
 
+        func applyTheme(bg: NSColor, fg: NSColor, accent: NSColor, font: NSFont) {
+            bgColor = bg
+            labelColor = fg
+            // Match the terminal font exactly so the prompt in the
+            // header reads as a continuation of the prompt that would
+            // otherwise show on the bottom row.
+            labelFont = font
+            // Hairline color: cursor accent at moderate alpha for
+            // visual continuity with the caret.
+            lineColor = accent.withAlphaComponent(0.5)
+            layer?.backgroundColor = bg.cgColor
+            needsDisplay = true
+        }
+
+        override var isFlipped: Bool { false }
+
         override func draw(_ dirtyRect: NSRect) {
             super.draw(dirtyRect)
-            // 1px hairline along the bottom edge.
-            separatorColor.setFill()
-            let line = NSRect(x: 0, y: 0, width: bounds.width, height: 1)
-            line.fill()
+
+            // Background fill.
+            bgColor.setFill()
+            bounds.fill()
+
+            // Compute text size + draw position.
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: labelFont,
+                .foregroundColor: labelColor,
+            ]
+            let attr = NSAttributedString(string: text, attributes: attrs)
+            let size = attr.size()
+            let textX: CGFloat = Self.leftPad
+            // Vertical baseline: center the text in the row. macOS
+            // y-up; the .draw(at:) origin is the bottom-left of the
+            // text box.
+            let textY: CGFloat = (bounds.height - size.height) / 2
+            attr.draw(at: NSPoint(x: textX, y: textY))
+
+            // Hairline from end of text to right edge, baseline-aligned
+            // (just below the text baseline so the line visually
+            // connects with the bottom of the glyphs).
+            let lineStartX = textX + ceil(size.width) + Self.textLineGap
+            let lineEndX = bounds.width - Self.rightPad
+            if lineEndX > lineStartX {
+                lineColor.setFill()
+                // Place the hairline at the visual baseline of the
+                // text — typically (font.descender is negative) at
+                // textY + |descender| from the bottom of the text box.
+                // For a clean look we use the geometric center of the
+                // text vertical extent.
+                let lineY = textY + size.height * 0.18
+                let line = NSRect(
+                    x: lineStartX,
+                    y: lineY,
+                    width: lineEndX - lineStartX,
+                    height: 1)
+                line.fill()
+            }
         }
     }
 

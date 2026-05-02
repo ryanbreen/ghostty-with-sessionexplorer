@@ -1193,6 +1193,18 @@ GHOSTTY_API void ghostty_surface_editor_commit(ghostty_surface_t,
 GHOSTTY_API void ghostty_surface_set_editor_rows(ghostty_surface_t,
                                                     uint32_t);
 
+// Geometry the apprt's editor view needs to size itself: the row
+// count between the shell's cursor row and the viewport's bottom
+// (the "natural" editor area), and the renderer's bottom padding in
+// pixels (the editor view extends through this so it visually reaches
+// the window's bottom edge).
+typedef struct {
+  uint32_t avail_rows;
+  uint32_t bottom_padding_px;
+} ghostty_editor_geometry_s;
+GHOSTTY_API ghostty_editor_geometry_s
+ghostty_surface_editor_geometry(ghostty_surface_t);
+
 // Read the shell's prompt text — what the shell printed between
 // OSC 133;A and OSC 133;B, sitting at the start of the input region.
 // Returns true if a prompt was read; the apprt should free the result

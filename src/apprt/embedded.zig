@@ -1977,6 +1977,26 @@ pub const CAPI = struct {
         surface.core_surface.setEditorRows(rows);
     }
 
+    /// Geometry the apprt's editor view needs to size itself: the row
+    /// count between the shell's cursor row and the viewport's bottom
+    /// (the "natural" editor area), and the renderer's bottom padding
+    /// in pixels (the editor view extends through this so it visually
+    /// reaches the window's bottom edge).
+    pub const EditorGeometry = extern struct {
+        avail_rows: u32,
+        bottom_padding_px: u32,
+    };
+
+    export fn ghostty_surface_editor_geometry(
+        surface: *Surface,
+    ) EditorGeometry {
+        const g = surface.core_surface.editorGeometry();
+        return .{
+            .avail_rows = g.avail_rows,
+            .bottom_padding_px = g.bottom_padding_px,
+        };
+    }
+
     /// Read the shell's prompt text — what the shell printed between
     /// OSC 133;A and OSC 133;B, sitting at the start of the input
     /// region. Returns true if a prompt was read; the apprt should
