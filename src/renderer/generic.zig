@@ -1284,27 +1284,27 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     break :overlay features.items;
                 };
 
+                // Track whether this frame produces an inactive→active
+                // transition. The erase-the-prompt-row work below runs
+                // ONLY on that transition; rerunning it on every active
+                // frame would also wipe the shell's commit-phase bytes
+                // (echoed command, command output, the next prompt's
+                // cells) the moment they hit the cursor row.
+                var just_activated = false;
+
                 // Auto-activate the editor on render when the shell's
                 // cursor is in an input region (OSC 133;B). Without
                 // this, the editor stays inert until the first
-                // keystroke, so the user opens a fresh prompt and
-                // sees nothing — instead of the bar that confirms
-                // the editor is on. Activate lazily here so the bar
-                // appears the moment the prompt is ready. On the
-                // inactive→active transition we also capture the
-                // shell's prompt cells (cur_y, cols 0..cur_x-1) into
-                // the Editor's cache, BEFORE the geometry block below
-                // erases the cursor row. The apprt reads the cache
-                // via `ghostty_surface_read_prompt` to display the
-                // exact prompt text in its header.
+                // keystroke. On the inactive→active transition we
+                // capture the prompt cells [0..cur_x-1] of the cursor
+                // row into the Editor's cache so the apprt's header
+                // can display the exact prompt text after we erase
+                // the cells from the grid.
                 if (state.prompt_editor) |ed| {
                     if (ed.enabled and !ed.isActive()) {
                         const screen = state.terminal.screens.active;
                         const cur = screen.cursor;
                         if (cur.semantic_content == .input) {
-                            // Capture prompt cells before erase. Use
-                            // arena_alloc for the temp string; copy
-                            // into the editor's persistent cache.
                             if (cur.x > 0) capture: {
                                 const start_pin = screen.pages.pin(.{
                                     .active = .{ .x = 0, .y = cur.y },
@@ -1325,6 +1325,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             }
                             ed.activate();
                             state.prompt_editor_active = true;
+                            just_activated = true;
                         }
                     } else if (ed.isActive()) {
                         const cur = state.terminal.screens.active.cursor;
@@ -1337,15 +1338,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // Geometry contract: the apprt's native editor view
                 // anchors its TOP edge to the shell's cursor row and
-                // extends down to the viewport bottom. We scroll the
-                // cursor row to `editor_top`, then ERASE the cursor
-                // row plus every row below it — the apprt's editor
-                // view paints its own UI in those rows, and we don't
-                // want any shell-printed cells (the prompt itself,
-                // residual cells from prior content, blink artifacts)
-                // poking through. The prompt text is captured into
-                // the Editor's cache on the activate transition and
-                // surfaced via `ghostty_surface_read_prompt`.
+                // extends down to the viewport bottom. Each frame we
+                // scroll so the cursor row sits at `editor_top`. The
+                // cell erase (which clears the prompt cells the apprt
+                // is about to cover with its header) runs ONLY on the
+                // activation transition; otherwise we'd also wipe the
+                // shell's commit-phase output the moment it lands on
+                // the cursor row.
                 if (state.prompt_editor_active) {
                     const trows: usize = self.terminal_state.rows;
                     const screen = state.terminal.screens.active;
@@ -1363,9 +1362,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         const cur_x = screen.cursor.x;
                         screen.cursorAbsolute(cur_x, @intCast(editor_top));
                     }
-                    // Erase rows [editor_top..trows-1]. The apprt
-                    // covers them visually with its editor view.
-                    if (trows > editor_top) {
+                    if (just_activated and trows > editor_top) {
                         screen.clearRows(
                             .{ .active = .{
                                 .x = 0,
