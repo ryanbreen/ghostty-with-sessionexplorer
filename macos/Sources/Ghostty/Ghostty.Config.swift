@@ -68,6 +68,25 @@ extension Ghostty {
             // We only do this on macOS because other Apple platforms do not have the
             // same filesystem concept.
 #if os(macOS)
+            // Build-variant defaults: load BEFORE user config so the
+            // user can still flip a key back. The wrb.dev variant
+            // enables `prompt-editor = true` so the experimental block
+            // editor is on by default in the Ghostty Dev install
+            // without opting in via the user's main ~/.config/ghostty
+            // file (which Ghostty WRB also reads).
+            if Bundle.main.bundleIdentifier == "com.mitchellh.ghostty.wrb.dev" {
+                let tempPath = NSTemporaryDirectory() +
+                    "ghostty-dev-defaults-\(getpid()).config"
+                let body = "prompt-editor = true\n"
+                if (try? body.write(toFile: tempPath, atomically: true,
+                                    encoding: .utf8)) != nil {
+                    tempPath.withCString { ghostty_config_load_file(cfg, $0) }
+                    // Best-effort cleanup; the file isn't load-bearing
+                    // after this call.
+                    try? FileManager.default.removeItem(atPath: tempPath)
+                }
+            }
+
             if let path {
                 ghostty_config_load_file(cfg, path)
             } else {
