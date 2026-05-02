@@ -31,89 +31,6 @@ const getConstraint = @import("../font/nerd_font_attributes.zig").getConstraint;
 
 const FileType = @import("../file_type.zig").FileType;
 
-/// Result of `computePromptEditorView` — the view's first-visible-line
-/// after applying caret-aware sticky scrolling, plus the maximum
-/// permissible value of view_top (used by Surface to clamp wheel-
-/// driven scrolling), plus the total visual line count (used by the
-/// caller to compute bar height).
-const PromptEditorView = struct {
-    view_top: usize,
-    max_view_top: usize,
-    line_count: usize,
-};
-
-/// Walk the editor buffer, splitting into visual lines on `\n` and at
-/// every `cols_per_line` codepoints, then derive the first-visible-line
-/// for this frame. When `caret_aware` is true the function will pull
-/// view_top to keep the cursor inside the visible window; when false
-/// it preserves `prev_view_top` (used after a wheel scroll, where the
-/// user has intentionally moved the view away from the cursor and we
-/// don't want to undo that on the next frame).
-fn computePromptEditorView(
-    buf: []const u8,
-    cursor_byte: usize,
-    prev_view_top: usize,
-    cols_per_line: usize,
-    available_rows: usize,
-    caret_aware: bool,
-) PromptEditorView {
-    // Two-pass walk would be cleaner but the buffer is short enough
-    // (typical shell input) that one pass with running totals suffices.
-    var line_count: usize = 1;
-    var col: usize = 0;
-    var i: usize = 0;
-    var cursor_line: usize = 0;
-    var cursor_assigned = false;
-
-    while (i < buf.len) {
-        if (i == cursor_byte and !cursor_assigned) {
-            cursor_line = line_count - 1;
-            cursor_assigned = true;
-        }
-        if (buf[i] == '\n') {
-            i += 1;
-            line_count += 1;
-            col = 0;
-            continue;
-        }
-        var n: usize = i + 1;
-        while (n < buf.len and (buf[n] & 0xC0) == 0x80) : (n += 1) {}
-        col += 1;
-        if (col >= cols_per_line) {
-            line_count += 1;
-            col = 0;
-        }
-        i = n;
-    }
-    if (!cursor_assigned) cursor_line = line_count - 1;
-
-    const visible = @min(line_count, available_rows);
-    const max_top: usize = if (line_count > visible)
-        line_count - visible
-    else
-        0;
-
-    var view_top = prev_view_top;
-    if (buf.len == 0) {
-        view_top = 0;
-    } else if (caret_aware) {
-        if (cursor_line < view_top) view_top = cursor_line;
-        const view_bottom_excl = view_top + visible;
-        if (cursor_line + 1 > view_bottom_excl) {
-            view_top = cursor_line + 1 - visible;
-        }
-    }
-    // Always clamp so view_top can't exceed max_top regardless of
-    // the source (caret-aware adjustment, wheel scroll, etc.).
-    if (view_top > max_top) view_top = max_top;
-
-    return .{
-        .view_top = view_top,
-        .max_view_top = max_top,
-        .line_count = line_count,
-    };
-}
-
 const macos = switch (builtin.os.tag) {
     .macos => @import("macos"),
     else => void,
@@ -1242,30 +1159,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 preedit: ?renderer.State.Preedit,
                 scrollbar: terminal.Scrollbar,
                 overlay_features: []const Overlay.Feature,
-                /// Snapshot of the prompt editor's buffer text for this
-                /// frame. Cloned into arena_alloc so it outlives the lock
-                /// release. Empty when the editor is inactive or absent.
-                prompt_editor_buffer: []const u8,
-                /// Byte offset of the editor's cursor for this frame
-                /// (within prompt_editor_buffer). The overlay uses
-                /// this to compute the caret's visual line+col after
-                /// applying line-wrap.
-                prompt_editor_cursor: usize,
-                /// Sticky scroll position (visual line index of the
-                /// first visible line) for this frame. Read from the
-                /// editor under the mutex, possibly after caret-aware
-                /// adjustment. The overlay paints starting from here.
-                prompt_editor_view_top: usize,
-                /// Distance from "live" in terminal cell rows. The
-                /// overlay uses this to do column-scroll: as the user
-                /// wheel-scrolls into terminal scrollback, the bar
-                /// rendering progressively scrolls off the bottom of
-                /// the viewport while older terminal content flows in.
-                prompt_editor_scroll_offset: usize,
                 /// True when the prompt editor is active for this
                 /// frame. rebuildCells uses this to suppress the
-                /// terminal grid's blinking cursor — the editor's
-                /// own caret IS the cursor while it owns input.
+                /// terminal grid's blinking cursor — the apprt's
+                /// native editor view draws its own caret while it
+                /// owns input, so a duplicate shell cursor would be
+                /// visually wrong.
                 prompt_editor_active: bool,
             };
 
@@ -1382,30 +1281,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                             break :overlay &.{};
                     }
 
-                    if (state.prompt_editor_active) {
-                        features.append(arena_alloc, .prompt_editor) catch
-                            break :overlay features.items;
-                    }
-
                     break :overlay features.items;
                 };
 
-                // Snapshot the prompt editor's buffer text and cursor
-                // for this frame, and update its scroll state. We hold
-                // the mutex throughout, so the buffer/cursor/view_top
-                // values are all consistent. The renderer is the
-                // sole component that drives caret-aware scrolling;
-                // wheel-driven scrolling is applied separately in
-                // Surface.scrollCallback under the same mutex.
-                var prompt_editor_buffer: []const u8 = "";
-                var prompt_editor_cursor: usize = 0;
-                var prompt_editor_view_top: usize = 0;
-                const prompt_editor_scroll_offset: usize = blk: {
-                    if (scrollbar.total <= scrollbar.len) break :blk 0;
-                    const live_offset = scrollbar.total - scrollbar.len;
-                    if (scrollbar.offset >= live_offset) break :blk 0;
-                    break :blk live_offset - scrollbar.offset;
-                };
                 // Auto-activate the editor on render when the shell's
                 // cursor is in an input region (OSC 133;B). Without
                 // this, the editor stays inert until the first
@@ -1429,71 +1307,31 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     }
                 }
 
+                // Geometry contract: the apprt's native editor view
+                // covers the bottom N rows of the viewport. Scroll the
+                // terminal up so the shell's cursor (and the prompt
+                // line above it) are not in the editor's region —
+                // otherwise the native view visually overlays content
+                // the user expects to see. We use a fixed 2-row
+                // reservation here because the renderer doesn't know
+                // the apprt view's exact height; the apprt is free to
+                // grow taller and overlay shell output, but a 2-row
+                // floor keeps the prompt line itself safe.
                 if (state.prompt_editor_active) {
-                    if (state.prompt_editor) |ed| {
-                        prompt_editor_buffer = arena_alloc.dupe(
-                            u8,
-                            ed.buffer.text(),
-                        ) catch "";
-                        prompt_editor_cursor = ed.cursor;
-
-                        // Wrap / visible-row math anchored to the
-                        // terminal grid's dimensions so the editor's
-                        // column boundaries align with terminal
-                        // columns. available_rows is `trows - 1`,
-                        // which reserves the topmost viewport row for
-                        // the shell's cursor and any terminal output
-                        // sitting above the bar — without that
-                        // reservation the bar can grow to fill the
-                        // whole viewport and visually override the
-                        // ghostty pane.
-                        const tcols: usize = self.terminal_state.cols;
-                        const trows: usize = self.terminal_state.rows;
-                        const cols_per_line: usize =
-                            if (tcols >= 2) tcols - 1 else 1;
-                        const available_rows: usize =
-                            if (trows > 1) trows - 1 else 1;
-
-                        const view = computePromptEditorView(
-                            prompt_editor_buffer,
-                            prompt_editor_cursor,
-                            ed.view_top,
-                            cols_per_line,
-                            available_rows,
-                            ed.cursor_dirty,
-                        );
-                        ed.view_top = view.view_top;
-                        ed.max_view_top = view.max_view_top;
-                        ed.cursor_dirty = false;
-                        prompt_editor_view_top = view.view_top;
-
-                        // Geometry contract: the editor "owns" the bottom
-                        // N rows of the viewport. Scroll terminal content
-                        // up so the cursor (and the prompt above it) are
-                        // not in the editor's region. Without this the
-                        // editor visually overlays content that the user
-                        // expects to see above. With this the editor and
-                        // the terminal are vertically stacked, no
-                        // overlap — terminal renders only above the bar
-                        // (its bottom rows are blank because we pushed
-                        // them to scrollback), editor renders at the
-                        // bottom.
-                        const visible_lines: usize =
-                            @min(view.line_count, available_rows);
-                        const desired_rows: usize = @max(2, visible_lines);
-                        if (trows > desired_rows) {
-                            const screen = state.terminal.screens.active;
-                            const cur_y: usize = screen.cursor.y;
-                            const editor_top: usize = trows - desired_rows;
-                            if (cur_y >= editor_top) {
-                                const shift = cur_y - editor_top + 1;
-                                state.terminal.scrollUp(shift) catch {};
-                                const cur_x = screen.cursor.x;
-                                screen.cursorAbsolute(
-                                    cur_x,
-                                    @intCast(cur_y - shift),
-                                );
-                            }
+                    const trows: usize = self.terminal_state.rows;
+                    const desired_rows: usize = 2;
+                    if (trows > desired_rows) {
+                        const screen = state.terminal.screens.active;
+                        const cur_y: usize = screen.cursor.y;
+                        const editor_top: usize = trows - desired_rows;
+                        if (cur_y >= editor_top) {
+                            const shift = cur_y - editor_top + 1;
+                            state.terminal.scrollUp(shift) catch {};
+                            const cur_x = screen.cursor.x;
+                            screen.cursorAbsolute(
+                                cur_x,
+                                @intCast(cur_y - shift),
+                            );
                         }
                     }
                 }
@@ -1504,10 +1342,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .preedit = preedit,
                     .scrollbar = scrollbar,
                     .overlay_features = overlay_features,
-                    .prompt_editor_buffer = prompt_editor_buffer,
-                    .prompt_editor_cursor = prompt_editor_cursor,
-                    .prompt_editor_view_top = prompt_editor_view_top,
-                    .prompt_editor_scroll_offset = prompt_editor_scroll_offset,
                     .prompt_editor_active = state.prompt_editor_active,
                 };
             };
@@ -1581,11 +1415,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // outside of any critical areas.
             self.rebuildOverlay(
                 critical.overlay_features,
-                critical.prompt_editor_buffer,
-                critical.prompt_editor_cursor,
-                critical.prompt_editor_view_top,
-                critical.prompt_editor_scroll_offset,
-                cursor_blink_visible,
             ) catch |err| {
                 log.warn(
                     "error rebuilding overlay surface err={}",
@@ -2473,11 +2302,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         fn rebuildOverlay(
             self: *Self,
             features: []const Overlay.Feature,
-            prompt_editor_buffer: []const u8,
-            prompt_editor_cursor: usize,
-            prompt_editor_view_top: usize,
-            prompt_editor_scroll_offset: usize,
-            prompt_editor_caret_visible: bool,
         ) Overlay.InitError!void {
             // const start = std.time.Instant.now() catch unreachable;
             // const start_micro = std.time.microTimestamp();
@@ -2536,13 +2360,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.overlay = new;
                 break :overlay &self.overlay.?;
             };
-            overlay.setPromptEditorBuffer(
-                prompt_editor_buffer,
-                prompt_editor_cursor,
-                prompt_editor_view_top,
-                prompt_editor_scroll_offset,
-                prompt_editor_caret_visible,
-            );
             overlay.applyFeatures(
                 alloc,
                 &self.terminal_state,

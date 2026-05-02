@@ -2805,83 +2805,6 @@ pub fn keyCallback(
         if (insp_ev) |*ev| ev else null,
     )) |v| return v;
 
-    // Prompt editor (EXPERIMENTAL). When the cursor is in an OSC-133
-    // input region and the feature is enabled, route keystrokes through
-    // the editor instead of the PTY. The editor owns the buffer, draws
-    // it in the bottom-row overlay, and on commit (Enter) ships the
-    // bytes to the PTY in one go.
-    if (self.config.prompt_editor) prompt_editor: {
-        // Decide activation under the renderer lock since we read shared
-        // terminal state and update renderer-visible flags.
-        const effect = effect: {
-            self.renderer_state.mutex.lock();
-            defer self.renderer_state.mutex.unlock();
-
-            const cursor = &self.io.terminal.screens.active.cursor;
-            const in_input_region = cursor.semantic_content == .input;
-
-            if (in_input_region and !self.editor.isActive()) {
-                self.editor.activate();
-                self.renderer_state.prompt_editor_active = true;
-            } else if (!in_input_region and self.editor.isActive()) {
-                self.editor.deactivate();
-                self.renderer_state.prompt_editor_active = false;
-            }
-
-            if (!self.editor.isActive()) break :prompt_editor;
-
-            const e = self.editor.handleKey(event) catch |err| {
-                log.warn("prompt editor handleKey err={}", .{err});
-                break :prompt_editor;
-            };
-            break :effect e;
-        };
-
-        switch (effect) {
-            .observed => {
-                // Editor doesn't want this key — fall through to normal
-                // PTY encoding / keybinding fallback.
-            },
-            .consumed => {
-                // Editor handled the key fully (typing, backspace,
-                // escape). Re-render so the bar reflects the new buffer
-                // and stop further key handling.
-                try self.queueRender();
-                return .consumed;
-            },
-            .commit => {
-                // Editor wants to commit. Allocate `text + '\r'` on the
-                // heap and hand it directly to termio as `write_alloc`
-                // — termio will free it when the write completes. This
-                // avoids the double-copy `Message.writeReq` would do.
-                const total = total: {
-                    self.renderer_state.mutex.lock();
-                    defer self.renderer_state.mutex.unlock();
-
-                    const text = self.editor.buffer.text();
-                    const buf = try self.alloc.alloc(u8, text.len + 1);
-                    @memcpy(buf[0..text.len], text);
-                    buf[text.len] = '\r';
-                    self.editor.commitDone();
-                    break :total buf;
-                };
-
-                if (self.child_exited) {
-                    self.alloc.free(total);
-                    self.close();
-                    return .closed;
-                }
-
-                self.queueIo(.{ .write_alloc = .{
-                    .alloc = self.alloc,
-                    .data = total,
-                } }, .unlocked);
-                try self.queueRender();
-                return .consumed;
-            },
-        }
-    }
-
     // If we allow KAM and KAM is enabled then we do nothing.
     if (self.config.vt_kam_allowed) {
         self.renderer_state.mutex.lock();
@@ -3803,14 +3726,8 @@ pub fn scrollCallback(
         if (y.delta != 0) {
             // The bar and the terminal grid live in one virtual
             // scrolling column. A wheel event always goes to the
-            // terminal's viewport scroll — the overlay reads the
-            // resulting `distance from live` each frame and shifts
-            // the bar's render position accordingly, so the bar's
-            // bottom rows progressively scroll off the bottom of
-            // the viewport while terminal scrollback flows in from
-            // the top. No separate "editor scroll" state.
+            // terminal's viewport scroll.
             self.io.terminal.scrollViewport(.{ .delta = y.delta * -1 });
-            if (self.editor.isActive()) self.queueRender() catch {};
         }
     }
 
@@ -5469,24 +5386,6 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             self.renderer_state.mutex.lock();
             defer self.renderer_state.mutex.unlock();
 
-            // If the prompt editor is active and has a buffer, copy
-            // that. The format flag (raw / etc.) is ignored — the
-            // buffer is already plain UTF-8 and not bracketed.
-            if (self.editor.isActive() and self.editor.buffer.len() > 0) {
-                const text = self.editor.buffer.text();
-                const buf = try self.alloc.allocSentinel(u8, text.len, 0);
-                defer self.alloc.free(buf);
-                @memcpy(buf, text);
-                self.rt_surface.setClipboard(.standard, &.{.{
-                    .mime = "text/plain",
-                    .data = buf,
-                }}, false) catch |err| {
-                    log.err("error copying editor buffer err={}", .{err});
-                    return false;
-                };
-                return true;
-            }
-
             if (self.io.terminal.screens.active.selection) |sel| {
                 try self.copySelectionToClipboards(
                     sel,
@@ -6341,21 +6240,6 @@ fn completeClipboardPaste(
     allow_unsafe: bool,
 ) !void {
     if (data.len == 0) return;
-
-    // If the prompt editor is active, route the paste into the editor's
-    // buffer at the cursor instead of sending it to the PTY. This makes
-    // Cmd+V (and OS-level paste, drag-and-drop text, IME commits, etc.)
-    // do the same kind of thing they would in any text input field while
-    // the editor owns the line.
-    {
-        self.renderer_state.mutex.lock();
-        defer self.renderer_state.mutex.unlock();
-        if (self.editor.isActive()) {
-            try self.editor.insertText(data);
-            try self.queueRender();
-            return;
-        }
-    }
 
     const encode_opts: input.paste.Options = encode_opts: {
         self.renderer_state.mutex.lock();

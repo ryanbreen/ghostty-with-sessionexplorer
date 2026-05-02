@@ -31,14 +31,18 @@ preedit: ?Preedit = null,
 mouse: Mouse = .{},
 
 /// True when the prompt editor (Surface.editor) is active. The renderer
-/// uses this to draw the editor's indicator at the bottom of the
-/// viewport. Updated by Surface under `mutex`.
+/// uses this to (a) suppress the terminal's blinking cursor while the
+/// apprt's native editor view draws its own caret, and (b) scroll the
+/// terminal up so the prompt line isn't covered by the native view.
+/// The renderer is the sole writer; it derives this from
+/// `prompt_editor.isActive()` each frame.
 prompt_editor_active: bool = false,
 
 /// Pointer to the prompt editor on the owning Surface. The renderer
-/// reads `editor.buffer.text()` and writes `editor.view_top` /
-/// `editor.max_view_top` under `mutex` each frame. Set by Surface
-/// during init; null otherwise.
+/// uses this only to fire `activate()` / `deactivate()` based on the
+/// terminal cursor's `semantic_content`; the editor's state-change
+/// callback in turn drives the apprt's native editor view. Set by
+/// Surface during init; null otherwise.
 prompt_editor: ?*inputpkg.editor.Editor = null,
 
 pub const Mouse = struct {
