@@ -43,7 +43,11 @@ prompt_editor_active: bool = false,
 /// `mutex`) when the apprt calls `ghostty_surface_set_editor_rows`.
 /// The renderer uses this to size the scroll-up reservation so the
 /// terminal's content always sits cleanly above the editor.
-prompt_editor_rows: u32 = 1,
+///
+/// Default of 4 leaves enough room for: 1 header row + 3 input rows.
+/// The apprt overrides this on activate; the default only matters for
+/// the first frame between auto-activation and the apprt's response.
+prompt_editor_rows: u32 = 4,
 
 /// Pointer to the prompt editor on the owning Surface. The renderer
 /// uses this only to fire `activate()` / `deactivate()` based on the

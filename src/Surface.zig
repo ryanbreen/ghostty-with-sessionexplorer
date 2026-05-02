@@ -3407,6 +3407,35 @@ pub fn setEditorRows(self: *Surface, rows: u32) void {
     self.renderer_state.prompt_editor_rows = @max(1, rows);
 }
 
+/// Read the shell's prompt text — i.e. what the shell printed between
+/// OSC 133;A and OSC 133;B and is now waiting at the start of the
+/// input region. Reads the cursor's row from column 0 up to (but not
+/// including) the cursor's column. Returns null if the editor isn't
+/// active, the cursor is at column 0, or the row pin can't be built.
+///
+/// Caller owns the returned `Text` and must free it.
+pub fn readPrompt(self: *Surface, alloc: Allocator) !?Text {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+
+    if (!self.editor.isActive()) return null;
+
+    const screen = self.io.terminal.screens.active;
+    const cur_x = screen.cursor.x;
+    const cur_y = screen.cursor.y;
+    if (cur_x == 0) return null;
+
+    const start_pin = screen.pages.pin(.{
+        .active = .{ .x = 0, .y = cur_y },
+    }) orelse return null;
+    const end_pin = screen.pages.pin(.{
+        .active = .{ .x = cur_x - 1, .y = cur_y },
+    }) orelse return null;
+
+    const sel = terminal.Selection.init(start_pin, end_pin, false);
+    return try self.dumpTextLocked(alloc, sel);
+}
+
 /// Commit a prompt-editor buffer to the PTY. Sends `text + '\r'` as
 /// raw bytes via `write_alloc`, bypassing both the paste pipeline
 /// (which can rewrite newlines and apply bracketed paste) AND the

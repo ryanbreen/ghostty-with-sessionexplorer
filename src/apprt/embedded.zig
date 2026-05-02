@@ -1977,6 +1977,39 @@ pub const CAPI = struct {
         surface.core_surface.setEditorRows(rows);
     }
 
+    /// Read the shell's prompt text — what the shell printed between
+    /// OSC 133;A and OSC 133;B, sitting at the start of the input
+    /// region. Returns true if a prompt was read; the apprt should
+    /// free the result with `ghostty_surface_free_text`. Returns false
+    /// if the editor is inactive, the cursor is at column 0, or the
+    /// read failed.
+    export fn ghostty_surface_read_prompt(
+        surface: *Surface,
+        result: *Text,
+    ) bool {
+        const text = surface.core_surface.readPrompt(global.alloc) catch |err| {
+            log.warn("error reading prompt err={}", .{err});
+            return false;
+        } orelse return false;
+
+        const vp: CoreSurface.Text.Viewport = text.viewport orelse .{
+            .tl_px_x = -1,
+            .tl_px_y = -1,
+            .offset_start = 0,
+            .offset_len = 0,
+        };
+
+        result.* = .{
+            .tl_px_x = vp.tl_px_x,
+            .tl_px_y = vp.tl_px_y,
+            .offset_start = vp.offset_start,
+            .offset_len = vp.offset_len,
+            .text = text.text.ptr,
+            .text_len = text.text.len,
+        };
+        return true;
+    }
+
     /// Register a callback that consumes pastes routed through
     /// libghostty's normal paste path while the editor is active. When
     /// set, the callback receives the bytes instead of the PTY so the

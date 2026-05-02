@@ -1193,6 +1193,14 @@ GHOSTTY_API void ghostty_surface_editor_commit(ghostty_surface_t,
 GHOSTTY_API void ghostty_surface_set_editor_rows(ghostty_surface_t,
                                                     uint32_t);
 
+// Read the shell's prompt text — what the shell printed between
+// OSC 133;A and OSC 133;B, sitting at the start of the input region.
+// Returns true if a prompt was read; the apprt should free the result
+// with `ghostty_surface_free_text`. Returns false if the editor isn't
+// active, the cursor is at column 0, or the read failed.
+GHOSTTY_API bool ghostty_surface_read_prompt(ghostty_surface_t,
+                                                ghostty_text_s*);
+
 // Editor paste callback. When the editor is active and a paste arrives
 // through libghostty's normal paste path (drag-and-drop, right-click
 // paste on the terminal, paste-binding action, etc.), libghostty fires

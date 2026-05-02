@@ -154,9 +154,15 @@ extension Ghostty {
             return ctFont as NSFont
         }
 
+        /// Minimum input rows. Empty buffer still shows a chunky input
+        /// area so the user can immediately see "this is where I type"
+        /// rather than a 1-line slit.
+        private static let minInputRows: Int = 3
+
         /// Recompute the editor's row count from the NSTextView's laid-
         /// out content height and resize/report if it changed. Total
-        /// reported rows = 1 (header) + lineCount (input).
+        /// reported rows = 1 (header) + lineCount (input), with a
+        /// minimum input floor so the input area is always usable.
         func syncHeightToContent() {
             guard let owner else { return }
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
@@ -176,29 +182,52 @@ extension Ghostty {
 
         private func currentLineCount(cellHeight: CGFloat) -> Int {
             guard let lm = textView.layoutManager,
-                let tc = textView.textContainer else { return 1 }
+                let tc = textView.textContainer else { return Self.minInputRows }
             lm.ensureLayout(for: tc)
             let used = lm.usedRect(for: tc).height
-            if used <= 0 { return 1 }
-            return max(1, Int(ceil(used / cellHeight)))
+            if used <= 0 { return Self.minInputRows }
+            return max(Self.minInputRows, Int(ceil(used / cellHeight)))
         }
 
-        /// Build the header label from owner.pwd + system info. Format:
-        /// "user@host pwd" — the same shape as a typical shell prompt.
+        /// Pull the shell's actual prompt text out of the terminal cells
+        /// via libghostty and display it in the header. This is the
+        /// EXACT text the shell printed (e.g. `wrb@Mac ~ %`) — matches
+        /// whatever PS1 the user has configured. Falls back to a
+        /// derived `user@host pwd` only if the read fails (editor not
+        /// active yet, cursor at column 0, etc.).
         func refreshHeaderText() {
+            if let composed = readShellPromptFromTerminal(), !composed.isEmpty {
+                headerView.setText(composed)
+                return
+            }
+            headerView.setText(derivedPromptText())
+        }
+
+        private func readShellPromptFromTerminal() -> String? {
+            guard let owner, let cSurface = owner.surface else { return nil }
+            var raw = ghostty_text_s()
+            guard ghostty_surface_read_prompt(cSurface, &raw) else { return nil }
+            defer { ghostty_surface_free_text(cSurface, &raw) }
+            guard let cstr = raw.text else { return nil }
+            let s = String(cString: cstr)
+            // The dump may pad to the row width with spaces — trim
+            // trailing whitespace so the centered label doesn't drift.
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        private func derivedPromptText() -> String {
             let user = NSUserName()
             let rawHost = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
             let host = rawHost
                 .replacingOccurrences(of: ".local", with: "")
                 .replacingOccurrences(of: ".lan", with: "")
             let pwd = abbreviatePath(owner?.pwd)
-            let composed: String
             if pwd.isEmpty {
-                composed = "\(user)@\(host)"
+                return "\(user)@\(host)"
             } else {
-                composed = "\(user)@\(host) \(pwd)"
+                return "\(user)@\(host) \(pwd)"
             }
-            headerView.setText(composed)
         }
 
         private func abbreviatePath(_ path: String?) -> String {
