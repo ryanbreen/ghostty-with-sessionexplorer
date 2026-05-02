@@ -1262,6 +1262,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 /// rendering progressively scrolls off the bottom of
                 /// the viewport while older terminal content flows in.
                 prompt_editor_scroll_offset: usize,
+                /// True when the prompt editor is active for this
+                /// frame. rebuildCells uses this to suppress the
+                /// terminal grid's blinking cursor — the editor's
+                /// own caret IS the cursor while it owns input.
+                prompt_editor_active: bool,
             };
 
             // Update all our data as tightly as possible within the mutex.
@@ -1503,6 +1508,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .prompt_editor_cursor = prompt_editor_cursor,
                     .prompt_editor_view_top = prompt_editor_view_top,
                     .prompt_editor_scroll_offset = prompt_editor_scroll_offset,
+                    .prompt_editor_active = state.prompt_editor_active,
                 };
             };
 
@@ -1591,14 +1597,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.draw_mutex.lock();
                 defer self.draw_mutex.unlock();
 
-                // Build our GPU cells
+                // Build our GPU cells. Cursor style is resolved as
+                // null when the prompt editor is active — rebuildCells
+                // already short-circuits cursor rendering on a null
+                // style, so we get "hide the terminal cursor" for
+                // free without a new branch inside the cursor block.
+                const cursor_style: ?renderer.CursorStyle =
+                    if (critical.prompt_editor_active) null else renderer.cursorStyle(
+                        &self.terminal_state,
+                        .{
+                            .preedit = critical.preedit != null,
+                            .focused = self.focused,
+                            .blink_visible = cursor_blink_visible,
+                        },
+                    );
                 self.rebuildCells(
                     critical.preedit,
-                    renderer.cursorStyle(&self.terminal_state, .{
-                        .preedit = critical.preedit != null,
-                        .focused = self.focused,
-                        .blink_visible = cursor_blink_visible,
-                    }),
+                    cursor_style,
                     &critical.links,
                 ) catch |err| {
                     // This means we weren't able to allocate our buffer

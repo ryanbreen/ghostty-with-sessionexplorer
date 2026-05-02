@@ -310,19 +310,29 @@ fn drawPromptEditorBar(
         0.0;
 
     // -- Bar background --
-    // Explicit RGBA at alpha 255. Using the bare RGB pixel here can
-    // produce surprising blending when z2d composites onto the
-    // RGBA-initialized surface; force the wire format we want so the
-    // overlay image lands on the GPU as fully opaque magenta.
-    const rgb = Color.prompt_editor.rgb();
-    const opaque_rgba: z2d.Pixel = .{ .rgba = .{
-        .r = rgb.r,
-        .g = rgb.g,
-        .b = rgb.b,
-        .a = 255,
+    // Theme-aware subtle fill: the terminal's foreground color at
+    // low alpha. Reads as "this row is the active input area" rather
+    // than "experimental block in dev colors". A 1-pixel top border
+    // in the cursor color (or foreground if no explicit cursor color
+    // is set) gives a clean delimiter between the prompt above and
+    // the editor below.
+    const fg = state.colors.foreground;
+    const cursor_rgb = state.colors.cursor orelse fg;
+    const fill: z2d.Pixel = blk: {
+        var rgba: z2d.pixel.RGBA = .{
+            .r = fg.r,
+            .g = fg.g,
+            .b = fg.b,
+            .a = 32, // ~12% — visible but unobtrusive
+        };
+        break :blk rgba.multiply().asPixel();
+    };
+    const border: z2d.Pixel = .{ .rgba = .{
+        .r = cursor_rgb.r,
+        .g = cursor_rgb.g,
+        .b = cursor_rgb.b,
+        .a = 200,
     } };
-    const border = opaque_rgba;
-    const fill = opaque_rgba;
     self.highlightGridRect(
         alloc,
         0,
@@ -401,7 +411,7 @@ fn drawPromptEditorBar(
             @as(f64, @floatFromInt(visual_caret_line)) * cell_h_f;
         const caret_top: f64 = cell_top + cell_h_f * 0.1;
         const caret_bottom: f64 = cell_top + cell_h_f * 0.9;
-        self.drawCaret(alloc, caret_x, caret_top, caret_bottom) catch |err| {
+        self.drawCaret(alloc, caret_x, caret_top, caret_bottom, cursor_rgb) catch |err| {
             log.warn("Error rendering prompt editor caret: {}", .{err});
         };
     }
@@ -477,14 +487,15 @@ fn computeVisualLines(
     };
 }
 
-/// Draw a 2-pixel-wide white vertical caret at `x`, between `top` and
-/// `bottom` pixel-y coordinates.
+/// Draw a 2-pixel-wide vertical caret at `x`, between `top` and
+/// `bottom` pixel-y coordinates, in the supplied RGB color.
 fn drawCaret(
     self: *Overlay,
     alloc: Allocator,
     x: f64,
     top: f64,
     bottom: f64,
+    color: terminal.color.RGB,
 ) !void {
     const caret_w: f64 = 2.0;
 
@@ -498,8 +509,13 @@ fn drawCaret(
     try ctx.lineTo(x, bottom);
     try ctx.closePath();
 
-    const white: z2d.Pixel = .{ .rgba = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
-    ctx.setSourceToPixel(white);
+    const pixel: z2d.Pixel = .{ .rgba = .{
+        .r = color.r,
+        .g = color.g,
+        .b = color.b,
+        .a = 255,
+    } };
+    ctx.setSourceToPixel(pixel);
     try ctx.fill();
 }
 
