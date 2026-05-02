@@ -1178,6 +1178,13 @@ typedef void (*ghostty_editor_state_cb)(void *userdata, bool active, uint32_t ro
 GHOSTTY_API void ghostty_surface_set_editor_state_cb(ghostty_surface_t,
                                                        ghostty_editor_state_cb);
 
+// Commit the prompt-editor's buffer. Sends `text + '\r'` to the PTY
+// as raw bytes, bypassing paste encoding. Used by the native editor
+// on Enter.
+GHOSTTY_API void ghostty_surface_editor_commit(ghostty_surface_t,
+                                                  const char*,
+                                                  uintptr_t);
+
 #ifdef __APPLE__
 GHOSTTY_API void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);
 GHOSTTY_API void* ghostty_surface_quicklook_font(ghostty_surface_t);

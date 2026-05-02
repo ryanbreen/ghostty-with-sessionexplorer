@@ -1910,6 +1910,20 @@ pub const CAPI = struct {
         surface.textCallback(ptr[0..len]);
     }
 
+    /// Commit a prompt-editor buffer to the PTY. Sends `text + '\r'`
+    /// as raw bytes, bypassing paste encoding and any editor intercept
+    /// in the regular text path. Used by the native CoreText editor on
+    /// Enter.
+    export fn ghostty_surface_editor_commit(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) void {
+        surface.core_surface.editorCommit(ptr[0..len]) catch |err| {
+            log.warn("editor commit failed err={}", .{err});
+        };
+    }
+
     /// Register a callback fired when the prompt editor's active state
     /// changes. The callback may be invoked from any thread (including
     /// the renderer thread); consumers must marshal to their main

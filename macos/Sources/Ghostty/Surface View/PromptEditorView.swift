@@ -36,6 +36,9 @@ extension Ghostty {
             scrollView.documentView = textView
             addSubview(scrollView)
             scrollView.frame = bounds
+
+            textView.commitHandler = { [weak self] in self?.commit() }
+            textView.yieldHandler = { [weak self] in self?.yieldFocusToTerminal() }
         }
 
         required init?(coder: NSCoder) {
@@ -43,7 +46,8 @@ extension Ghostty {
         }
 
         /// Show the bar at the given desired height (rows × cellHeight). Pins
-        /// to the bottom of the parent SurfaceView.
+        /// to the bottom of the parent SurfaceView and grabs first responder
+        /// so the user can immediately type.
         func activate(rows: UInt32) {
             guard let owner else { return }
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
@@ -51,11 +55,53 @@ extension Ghostty {
             let desiredHeight = desiredRows * cellHeight
             layoutAtBottom(in: owner, height: desiredHeight)
             isHidden = false
+            owner.window?.makeFirstResponder(textView)
         }
 
         func deactivate() {
             isHidden = true
             textView.string = ""
+            yieldFocusToTerminal()
+        }
+
+        /// Pull theme colors from the owning surface and push them into the
+        /// NSTextView. Called on activate and on derivedConfig changes.
+        func applyTheme() {
+            guard let owner else { return }
+            let bg = NSColor(owner.derivedConfig.backgroundColor)
+            let fg = NSColor(owner.derivedConfig.foregroundColor)
+            let caret = NSColor(owner.derivedConfig.cursorColor)
+            textView.backgroundColor = bg
+            textView.textColor = fg
+            textView.insertionPointColor = caret
+            scrollView.backgroundColor = bg
+            // Re-apply the typing attributes so any next-typed character
+            // picks up the new color even if the buffer is empty.
+            textView.typingAttributes = [
+                .font: textView.font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: fg,
+            ]
+        }
+
+        /// Commit the current buffer to the PTY (text + CR). Called when
+        /// the user presses Enter inside the text view.
+        func commit() {
+            guard let owner, let cSurface = owner.surface else { return }
+            let payload = textView.string
+            payload.withCString { cstr in
+                let len = strlen(cstr)
+                ghostty_surface_editor_commit(cSurface, cstr, UInt(len))
+            }
+            textView.string = ""
+        }
+
+        /// Move first responder back to the terminal SurfaceView. Called on
+        /// Option-Up while the editor has focus, and on deactivate.
+        func yieldFocusToTerminal() {
+            guard let owner, let window = owner.window else { return }
+            if window.firstResponder === textView {
+                window.makeFirstResponder(owner)
+            }
         }
 
         private func layoutAtBottom(in parent: NSView, height: CGFloat) {
@@ -69,9 +115,31 @@ extension Ghostty {
         }
     }
 
-    /// NSTextView subclass for the prompt editor. Currently a stub —
-    /// commit / hotkey behavior lands in a follow-up commit.
+    /// NSTextView subclass that captures Enter (commit) and Option-Up
+    /// (yield focus to the terminal). All other keys fall through to
+    /// NSTextView's default editing behavior.
     final class PromptEditorTextView: NSTextView {
-        // Stub for now. Commit-on-Enter and Option-Up arrive in Commit 2.
+        var commitHandler: (() -> Void)?
+        var yieldHandler: (() -> Void)?
+
+        override func keyDown(with event: NSEvent) {
+            // Plain Return (no modifiers) → commit the buffer.
+            if event.keyCode == 36 &&
+                event.modifierFlags.intersection(
+                    [.shift, .command, .option, .control]
+                ).isEmpty {
+                commitHandler?()
+                return
+            }
+
+            // Option-Up → hand focus back to the terminal so the user can
+            // hit Ctrl-C / Ctrl-Z / scroll the scrollback / etc.
+            if event.keyCode == 126 && event.modifierFlags.contains(.option) {
+                yieldHandler?()
+                return
+            }
+
+            super.keyDown(with: event)
+        }
     }
 }

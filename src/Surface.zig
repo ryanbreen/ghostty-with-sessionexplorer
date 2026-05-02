@@ -3474,6 +3474,32 @@ pub fn textCallback(self: *Surface, text: []const u8) !void {
     try self.completeClipboardPaste(text, true);
 }
 
+/// Commit a prompt-editor buffer to the PTY. Sends `text + '\r'` as
+/// raw bytes via `write_alloc`, bypassing both the paste pipeline
+/// (which can rewrite newlines and apply bracketed paste) AND the
+/// editor's intercept branch in `completeClipboardPaste`. The shell
+/// echoes the text and runs it; the resulting OSC 133;C will
+/// deactivate the editor through the normal auto-activation path.
+pub fn editorCommit(self: *Surface, text: []const u8) !void {
+    crash.sentry.thread_state = self.crashThreadState();
+    defer crash.sentry.thread_state = null;
+
+    if (self.child_exited) {
+        self.close();
+        return;
+    }
+
+    const buf = try self.alloc.alloc(u8, text.len + 1);
+    @memcpy(buf[0..text.len], text);
+    buf[text.len] = '\r';
+
+    self.queueIo(.{ .write_alloc = .{
+        .alloc = self.alloc,
+        .data = buf,
+    } }, .unlocked);
+    try self.queueRender();
+}
+
 /// Callback for when the surface is fully visible or not, regardless
 /// of focus state. This is used to pause rendering when the surface
 /// is not visible, and also re-render when it becomes visible again.

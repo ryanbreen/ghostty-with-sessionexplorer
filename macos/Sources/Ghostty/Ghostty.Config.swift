@@ -510,6 +510,41 @@ extension Ghostty {
             )
         }
 
+        var foregroundColor: Color {
+            var color: ghostty_config_color_s = .init()
+            let key = "foreground"
+            if !ghostty_config_get(config, &color, key, UInt(key.lengthOfBytes(using: .utf8))) {
+#if os(macOS)
+                return Color(NSColor.textColor)
+#elseif os(iOS)
+                return Color(UIColor.label)
+#else
+#error("unsupported")
+#endif
+            }
+
+            return .init(
+                red: Double(color.r) / 255,
+                green: Double(color.g) / 255,
+                blue: Double(color.b) / 255
+            )
+        }
+
+        var cursorColor: Color {
+            var color: ghostty_config_color_s = .init()
+            let key = "cursor-color"
+            if !ghostty_config_get(config, &color, key, UInt(key.lengthOfBytes(using: .utf8))) {
+                // No explicit cursor-color → fall back to foreground.
+                return foregroundColor
+            }
+
+            return .init(
+                red: Double(color.r) / 255,
+                green: Double(color.g) / 255,
+                blue: Double(color.b) / 255
+            )
+        }
+
         var backgroundOpacity: Double {
             guard let config = self.config else { return 1 }
             var v: Double = 1

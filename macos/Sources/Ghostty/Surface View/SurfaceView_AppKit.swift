@@ -372,6 +372,7 @@ extension Ghostty {
             editor.isHidden = true
             addSubview(editor)
             self.promptEditorView = editor
+            editor.applyTheme()
 
             ghostty_surface_set_editor_state_cb(surface) { userdata, active, rows in
                 guard let userdata else { return }
@@ -379,6 +380,7 @@ extension Ghostty {
                     .fromOpaque(userdata).takeUnretainedValue()
                 DispatchQueue.main.async {
                     if active {
+                        view.promptEditorView?.applyTheme()
                         view.promptEditorView?.activate(rows: rows)
                     } else {
                         view.promptEditorView?.deactivate()
@@ -754,7 +756,11 @@ extension Ghostty {
 
             // Update our derived config
             DispatchQueue.main.async { [weak self] in
-                self?.derivedConfig = DerivedConfig(config)
+                guard let self = self else { return }
+                self.derivedConfig = DerivedConfig(config)
+                // Re-push theme into the prompt editor so its colors
+                // track terminal config changes (theme reloads, etc.).
+                self.promptEditorView?.applyTheme()
             }
         }
 
@@ -1077,6 +1083,19 @@ extension Ghostty {
         override func keyDown(with event: NSEvent) {
             guard let surface = self.surface else {
                 self.interpretKeyEvents([event])
+                return
+            }
+
+            // Option-Down with the prompt editor visible: hand focus to
+            // the editor so the user can resume typing without clicking.
+            // Keycode 125 = Down arrow.
+            if event.keyCode == 125 &&
+                event.modifierFlags.contains(.option),
+                let editor = self.promptEditorView,
+                !editor.isHidden,
+                let window = self.window
+            {
+                window.makeFirstResponder(editor.textView)
                 return
             }
 
@@ -1792,6 +1811,8 @@ extension Ghostty {
 
         struct DerivedConfig {
             let backgroundColor: Color
+            let foregroundColor: Color
+            let cursorColor: Color
             let backgroundOpacity: Double
             let backgroundBlur: Ghostty.Config.BackgroundBlur
             let macosWindowShadow: Bool
@@ -1801,6 +1822,8 @@ extension Ghostty {
 
             init() {
                 self.backgroundColor = Color(NSColor.windowBackgroundColor)
+                self.foregroundColor = Color(NSColor.textColor)
+                self.cursorColor = Color(NSColor.textColor)
                 self.backgroundOpacity = 1
                 self.backgroundBlur = .disabled
                 self.macosWindowShadow = true
@@ -1811,6 +1834,8 @@ extension Ghostty {
 
             init(_ config: Ghostty.Config) {
                 self.backgroundColor = config.backgroundColor
+                self.foregroundColor = config.foregroundColor
+                self.cursorColor = config.cursorColor
                 self.backgroundOpacity = config.backgroundOpacity
                 self.backgroundBlur = config.backgroundBlur
                 self.macosWindowShadow = config.macosWindowShadow
