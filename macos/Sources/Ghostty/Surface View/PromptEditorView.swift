@@ -9,14 +9,23 @@ extension Ghostty {
         weak var owner: SurfaceView?
         let scrollView: NSScrollView
         let textView: PromptEditorTextView
+        /// 1px hairline at the top of the bar that visually separates the
+        /// editor from the terminal output above it.
+        let separator: NSBox
+
+        /// Height of the top separator in points.
+        private static let separatorHeight: CGFloat = 1
 
         init(owner: SurfaceView) {
             self.owner = owner
             self.scrollView = NSScrollView(frame: .zero)
             self.textView = PromptEditorTextView(frame: .zero)
+            self.separator = NSBox(frame: .zero)
             super.init(frame: .zero)
 
-            scrollView.autoresizingMask = [.width, .height]
+            separator.boxType = .separator
+            addSubview(separator)
+
             scrollView.hasVerticalScroller = true
             scrollView.hasHorizontalScroller = false
             scrollView.borderType = .noBorder
@@ -30,12 +39,13 @@ extension Ghostty {
             textView.isAutomaticTextReplacementEnabled = false
             textView.isAutomaticSpellingCorrectionEnabled = false
             textView.smartInsertDeleteEnabled = false
-            textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-            textView.textContainerInset = NSSize(width: 4, height: 2)
+            // Zero vertical inset so the first text glyph sits flush
+            // beneath the separator — the user wants the edit area
+            // immediately below the bottom of the terminal results.
+            textView.textContainerInset = NSSize(width: 4, height: 0)
 
             scrollView.documentView = textView
             addSubview(scrollView)
-            scrollView.frame = bounds
 
             textView.owner = owner
             textView.commitHandler = { [weak self] in self?.commit() }
@@ -45,6 +55,17 @@ extension Ghostty {
             fatalError("init(coder:) is not supported")
         }
 
+        override func layout() {
+            super.layout()
+            let h = bounds.height
+            let w = bounds.width
+            let sepH = Self.separatorHeight
+            // macOS coordinates: y=0 is bottom. Separator pins to top,
+            // scrollView fills everything below.
+            separator.frame = NSRect(x: 0, y: h - sepH, width: w, height: sepH)
+            scrollView.frame = NSRect(x: 0, y: 0, width: w, height: max(0, h - sepH))
+        }
+
         /// Show the bar at the given desired height (rows × cellHeight). Pins
         /// to the bottom of the parent SurfaceView and grabs first responder
         /// so the user can immediately type.
@@ -52,7 +73,10 @@ extension Ghostty {
             guard let owner else { return }
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
             let desiredRows = max(2, CGFloat(rows))
-            let desiredHeight = desiredRows * cellHeight
+            // Add the separator's height to the natural row-based height
+            // so the visible text area stays exactly `desiredRows` tall
+            // and the separator sits one px above it.
+            let desiredHeight = desiredRows * cellHeight + Self.separatorHeight
             layoutAtBottom(in: owner, height: desiredHeight)
             isHidden = false
             owner.window?.makeFirstResponder(textView)
@@ -64,8 +88,9 @@ extension Ghostty {
             yieldFocusToTerminal()
         }
 
-        /// Pull theme colors from the owning surface and push them into the
-        /// NSTextView. Called on activate and on derivedConfig changes.
+        /// Pull theme colors and the terminal's primary font from the
+        /// owning surface and push them into the NSTextView. Called on
+        /// activate and on derivedConfig changes.
         func applyTheme() {
             guard let owner else { return }
             let bg = NSColor(owner.derivedConfig.backgroundColor)
@@ -75,12 +100,32 @@ extension Ghostty {
             textView.textColor = fg
             textView.insertionPointColor = caret
             scrollView.backgroundColor = bg
-            // Re-apply the typing attributes so any next-typed character
-            // picks up the new color even if the buffer is empty.
+
+            // Pull the terminal's exact CoreText primary font (already
+            // scaled for display points) from libghostty so the editor
+            // reads as the same surface as the rest of the terminal.
+            // Falls back to the system mono if the surface isn't ready
+            // or libghostty isn't using CoreText.
+            let font = loadTerminalFont(for: owner)
+            textView.font = font
+
             textView.typingAttributes = [
-                .font: textView.font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .font: font,
                 .foregroundColor: fg,
             ]
+        }
+
+        /// Borrow a CTFont from libghostty for the terminal's primary
+        /// face and bridge to NSFont. The C function returns a +1 retain
+        /// (it ran copyWithAttributes); we balance with `release()`.
+        private func loadTerminalFont(for owner: SurfaceView) -> NSFont {
+            let fallback = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+            guard let cSurface = owner.surface else { return fallback }
+            guard let raw = ghostty_surface_quicklook_font(cSurface) else { return fallback }
+            let unmanaged = Unmanaged<CTFont>.fromOpaque(raw)
+            let ctFont = unmanaged.takeUnretainedValue()
+            unmanaged.release()
+            return ctFont as NSFont
         }
 
         /// Commit the current buffer to the PTY (text + CR). Called when
@@ -96,7 +141,8 @@ extension Ghostty {
         }
 
         /// Move first responder back to the terminal SurfaceView. Called on
-        /// Option-Up while the editor has focus, and on deactivate.
+        /// deactivate so the user can drive vim / etc. once the editor
+        /// is hidden.
         func yieldFocusToTerminal() {
             guard let owner, let window = owner.window else { return }
             if window.firstResponder === textView {
