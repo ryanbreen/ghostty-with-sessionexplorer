@@ -496,6 +496,11 @@ pub const Surface = struct {
     /// that getTitle works without the implementer needing to save it.
     title: ?[:0]const u8 = null,
 
+    /// Callback fired when the prompt editor's active state changes.
+    /// Set via `ghostty_surface_set_editor_state_cb`. Receives the
+    /// surface's userdata.
+    editor_state_cb: ?*const fn (?*anyopaque, bool, u32) callconv(.c) void = null,
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -1903,6 +1908,33 @@ pub const CAPI = struct {
         len: usize,
     ) void {
         surface.textCallback(ptr[0..len]);
+    }
+
+    /// Register a callback fired when the prompt editor's active state
+    /// changes. The callback may be invoked from any thread (including
+    /// the renderer thread); consumers must marshal to their main
+    /// thread if needed.
+    export fn ghostty_surface_set_editor_state_cb(
+        surface: *Surface,
+        cb: ?*const fn (?*anyopaque, bool, u32) callconv(.c) void,
+    ) void {
+        surface.editor_state_cb = cb;
+        if (cb != null) {
+            surface.core_surface.editor.state_changed_cb = editorStateTrampoline;
+            surface.core_surface.editor.state_changed_userdata = surface;
+        } else {
+            surface.core_surface.editor.state_changed_cb = null;
+            surface.core_surface.editor.state_changed_userdata = null;
+        }
+    }
+
+    fn editorStateTrampoline(
+        ud: ?*anyopaque,
+        active: bool,
+        rows: u32,
+    ) callconv(.c) void {
+        const s: *Surface = @ptrCast(@alignCast(ud orelse return));
+        if (s.editor_state_cb) |cb| cb(s.userdata, active, rows);
     }
 
     /// Set the preedit text for the surface. This is used for IME

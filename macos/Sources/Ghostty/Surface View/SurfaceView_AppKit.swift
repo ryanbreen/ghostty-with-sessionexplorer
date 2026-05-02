@@ -107,6 +107,10 @@ extension Ghostty {
         // Swift-side state only; libghostty does not need to know about it.
         var stateID: String?
 
+        // Native CoreText prompt editor (lives at the bottom of the surface
+        // when a shell prompt is in its OSC-133 input region).
+        private(set) var promptEditorView: Ghostty.PromptEditorView?
+
         // A content size received through sizeDidChange that may in some cases
         // be different from the frame size.
         private var contentSizeBacking: NSSize?
@@ -361,6 +365,26 @@ extension Ghostty {
                 return
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
+
+            // Native CoreText prompt editor. Created hidden; libghostty
+            // toggles it via the editor-state callback below.
+            let editor = Ghostty.PromptEditorView(owner: self)
+            editor.isHidden = true
+            addSubview(editor)
+            self.promptEditorView = editor
+
+            ghostty_surface_set_editor_state_cb(surface) { userdata, active, rows in
+                guard let userdata else { return }
+                let view = Unmanaged<Ghostty.SurfaceView>
+                    .fromOpaque(userdata).takeUnretainedValue()
+                DispatchQueue.main.async {
+                    if active {
+                        view.promptEditorView?.activate(rows: rows)
+                    } else {
+                        view.promptEditorView?.deactivate()
+                    }
+                }
+            }
 
             // Setup our tracking area so we get mouse moved events
             updateTrackingAreas()

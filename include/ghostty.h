@@ -1170,6 +1170,14 @@ GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
                                               ghostty_text_s*);
 GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
 
+// Prompt-editor state callback. Fires on every transition between
+// active and inactive. `active=true` includes a `rows` hint for the
+// initial bar height; `active=false` may pass 0. The callback may be
+// invoked from a non-main thread; consumers must marshal as needed.
+typedef void (*ghostty_editor_state_cb)(void *userdata, bool active, uint32_t rows);
+GHOSTTY_API void ghostty_surface_set_editor_state_cb(ghostty_surface_t,
+                                                       ghostty_editor_state_cb);
+
 #ifdef __APPLE__
 GHOSTTY_API void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);
 GHOSTTY_API void* ghostty_surface_quicklook_font(ghostty_surface_t);

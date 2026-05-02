@@ -80,6 +80,13 @@ max_view_top: usize = 0,
 /// renderer clears it after each frame.
 cursor_dirty: bool = true,
 
+/// Optional state-change callback. Invoked on every activate/deactivate
+/// transition. The apprt layer (e.g. macOS) uses this to show/hide the
+/// native CoreText prompt-editor view. The callback may fire on the
+/// renderer thread; consumers must marshal to their main thread.
+state_changed_cb: ?*const fn (?*anyopaque, bool, u32) callconv(.c) void = null,
+state_changed_userdata: ?*anyopaque = null,
+
 pub fn init(alloc: Allocator, enabled: bool) Editor {
     return .{
         .alloc = alloc,
@@ -104,6 +111,7 @@ pub fn activate(self: *Editor) void {
     self.cursor_dirty = true;
     self.state = .active;
     log.debug("prompt editor activated", .{});
+    if (self.state_changed_cb) |cb| cb(self.state_changed_userdata, true, 2);
 }
 
 /// Deactivate the editor without committing. Called on OSC 133;C
@@ -117,6 +125,7 @@ pub fn deactivate(self: *Editor) void {
     self.max_view_top = 0;
     self.cursor_dirty = true;
     log.debug("prompt editor deactivated", .{});
+    if (self.state_changed_cb) |cb| cb(self.state_changed_userdata, false, 0);
 }
 
 /// Returns true if the editor is currently intercepting input.
