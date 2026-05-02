@@ -26,6 +26,12 @@ alloc: Allocator,
 state: State = .inactive,
 enabled: bool = false,
 
+/// Cached prompt text, captured from the terminal cells just before
+/// the renderer erases them. Populated on each activation transition;
+/// cleared on deactivation. Surfaced to the apprt via
+/// `ghostty_surface_read_prompt`.
+cached_prompt: std.ArrayListUnmanaged(u8) = .empty,
+
 /// Optional state-change callback. Invoked on every activate/deactivate
 /// transition. The apprt layer (e.g. macOS) uses this to show/hide the
 /// native CoreText prompt-editor view. The callback may fire on the
@@ -40,7 +46,9 @@ pub fn init(alloc: Allocator, enabled: bool) Editor {
     };
 }
 
-pub fn deinit(_: *Editor) void {}
+pub fn deinit(self: *Editor) void {
+    self.cached_prompt.deinit(self.alloc);
+}
 
 /// Activate the editor in response to an OSC 133;B (end-of-prompt)
 /// sequence. No-op if already active or if the feature is disabled.
@@ -57,8 +65,23 @@ pub fn activate(self: *Editor) void {
 pub fn deactivate(self: *Editor) void {
     if (self.state == .inactive) return;
     self.state = .inactive;
+    self.cached_prompt.clearRetainingCapacity();
     log.debug("prompt editor deactivated", .{});
     if (self.state_changed_cb) |cb| cb(self.state_changed_userdata, false, 0);
+}
+
+/// Replace the cached prompt text with `text`. Called by the renderer
+/// on the inactive→active transition, just before it erases the prompt
+/// cells from the terminal grid.
+pub fn capturePrompt(self: *Editor, text: []const u8) Allocator.Error!void {
+    self.cached_prompt.clearRetainingCapacity();
+    try self.cached_prompt.appendSlice(self.alloc, text);
+}
+
+/// Read the cached prompt text. Empty when the editor isn't active or
+/// no prompt has been captured yet.
+pub fn cachedPrompt(self: *const Editor) []const u8 {
+    return self.cached_prompt.items;
 }
 
 /// Returns true if the editor is currently active.

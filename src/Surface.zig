@@ -3432,33 +3432,24 @@ pub fn editorGeometry(self: *Surface) EditorGeometry {
     };
 }
 
-/// Read the shell's prompt text — i.e. what the shell printed between
-/// OSC 133;A and OSC 133;B and is now waiting at the start of the
-/// input region. Reads the cursor's row from column 0 up to (but not
-/// including) the cursor's column. Returns null if the editor isn't
-/// active, the cursor is at column 0, or the row pin can't be built.
-///
-/// Caller owns the returned `Text` and must free it.
+/// Read the shell's prompt text from the Editor's cache, populated by
+/// the renderer on the inactive→active transition (before the prompt
+/// cells are erased from the terminal grid). Returns null when the
+/// editor isn't active or the cache is empty. Caller owns the returned
+/// `Text`.
 pub fn readPrompt(self: *Surface, alloc: Allocator) !?Text {
     self.renderer_state.mutex.lock();
     defer self.renderer_state.mutex.unlock();
 
     if (!self.editor.isActive()) return null;
 
-    const screen = self.io.terminal.screens.active;
-    const cur_x = screen.cursor.x;
-    const cur_y = screen.cursor.y;
-    if (cur_x == 0) return null;
+    const cached = self.editor.cachedPrompt();
+    if (cached.len == 0) return null;
 
-    const start_pin = screen.pages.pin(.{
-        .active = .{ .x = 0, .y = cur_y },
-    }) orelse return null;
-    const end_pin = screen.pages.pin(.{
-        .active = .{ .x = cur_x - 1, .y = cur_y },
-    }) orelse return null;
-
-    const sel = terminal.Selection.init(start_pin, end_pin, false);
-    return try self.dumpTextLocked(alloc, sel);
+    // Allocate a NUL-terminated copy for the C ABI consumer.
+    const buf = try alloc.allocSentinel(u8, cached.len, 0);
+    @memcpy(buf, cached);
+    return .{ .text = buf };
 }
 
 /// Commit a prompt-editor buffer to the PTY. Sends `text + '\r'` as

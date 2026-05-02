@@ -1290,11 +1290,39 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // keystroke, so the user opens a fresh prompt and
                 // sees nothing — instead of the bar that confirms
                 // the editor is on. Activate lazily here so the bar
-                // appears the moment the prompt is ready.
+                // appears the moment the prompt is ready. On the
+                // inactive→active transition we also capture the
+                // shell's prompt cells (cur_y, cols 0..cur_x-1) into
+                // the Editor's cache, BEFORE the geometry block below
+                // erases the cursor row. The apprt reads the cache
+                // via `ghostty_surface_read_prompt` to display the
+                // exact prompt text in its header.
                 if (state.prompt_editor) |ed| {
                     if (ed.enabled and !ed.isActive()) {
-                        const cur = state.terminal.screens.active.cursor;
+                        const screen = state.terminal.screens.active;
+                        const cur = screen.cursor;
                         if (cur.semantic_content == .input) {
+                            // Capture prompt cells before erase. Use
+                            // arena_alloc for the temp string; copy
+                            // into the editor's persistent cache.
+                            if (cur.x > 0) capture: {
+                                const start_pin = screen.pages.pin(.{
+                                    .active = .{ .x = 0, .y = cur.y },
+                                }) orelse break :capture;
+                                const end_pin = screen.pages.pin(.{
+                                    .active = .{ .x = cur.x - 1, .y = cur.y },
+                                }) orelse break :capture;
+                                const sel = terminal.Selection.init(
+                                    start_pin,
+                                    end_pin,
+                                    false,
+                                );
+                                const text = screen.selectionString(
+                                    arena_alloc,
+                                    .{ .sel = sel, .trim = false },
+                                ) catch break :capture;
+                                ed.capturePrompt(text) catch {};
+                            }
                             ed.activate();
                             state.prompt_editor_active = true;
                         }
@@ -1309,14 +1337,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // Geometry contract: the apprt's native editor view
                 // anchors its TOP edge to the shell's cursor row and
-                // extends down to the viewport bottom. The header bar
-                // (top row of the editor) covers the prompt cells on
-                // the cursor row, so the empty current prompt never
-                // shows up in the results panel above. We size the
-                // reserved row count = max(content rows, available
-                // rows below cursor, 2): when the user has typed many
-                // lines and `set_editor_rows` reports a larger number,
-                // we scroll the terminal up enough to honor that.
+                // extends down to the viewport bottom. We scroll the
+                // cursor row to `editor_top`, then ERASE the cursor
+                // row plus every row below it — the apprt's editor
+                // view paints its own UI in those rows, and we don't
+                // want any shell-printed cells (the prompt itself,
+                // residual cells from prior content, blink artifacts)
+                // poking through. The prompt text is captured into
+                // the Editor's cache on the activate transition and
+                // surfaced via `ghostty_surface_read_prompt`.
                 if (state.prompt_editor_active) {
                     const trows: usize = self.terminal_state.rows;
                     const screen = state.terminal.screens.active;
@@ -1324,17 +1353,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     const content_rows: usize = @max(2, state.prompt_editor_rows);
                     const available: usize = if (trows > cur_y) trows - cur_y else 1;
                     const desired_rows: usize = @max(@max(content_rows, available), 2);
-                    if (trows > desired_rows) {
-                        const editor_top: usize = trows - desired_rows;
-                        if (cur_y > editor_top) {
-                            const shift = cur_y - editor_top;
-                            state.terminal.scrollUp(shift) catch {};
-                            const cur_x = screen.cursor.x;
-                            screen.cursorAbsolute(
-                                cur_x,
-                                @intCast(editor_top),
-                            );
-                        }
+                    const editor_top: usize = if (trows > desired_rows)
+                        trows - desired_rows
+                    else
+                        0;
+                    if (cur_y > editor_top) {
+                        const shift = cur_y - editor_top;
+                        state.terminal.scrollUp(shift) catch {};
+                        const cur_x = screen.cursor.x;
+                        screen.cursorAbsolute(cur_x, @intCast(editor_top));
+                    }
+                    // Erase rows [editor_top..trows-1]. The apprt
+                    // covers them visually with its editor view.
+                    if (trows > editor_top) {
+                        screen.clearRows(
+                            .{ .active = .{
+                                .x = 0,
+                                .y = @intCast(editor_top),
+                            } },
+                            .{ .active = .{
+                                .x = 0,
+                                .y = @intCast(trows - 1),
+                            } },
+                            false,
+                        );
                     }
                 }
 
