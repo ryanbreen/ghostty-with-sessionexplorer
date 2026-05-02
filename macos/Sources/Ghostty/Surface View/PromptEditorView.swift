@@ -1,38 +1,40 @@
 import AppKit
+import Combine
 import GhosttyKit
 
 extension Ghostty {
-    /// Native CoreText prompt-editor bar pinned to the bottom of a SurfaceView.
-    /// Wraps an NSTextView in an NSScrollView so the editor can scroll its own
-    /// contents independently of the terminal grid. Grows vertically as the
-    /// user types more lines, pushing the terminal output up.
+    /// Native CoreText prompt-editor pinned to the bottom of a SurfaceView.
+    /// Composed of a 1-row header bar (centered prompt info — user@host
+    /// and pwd — plus a 1px hairline at its bottom edge) sitting on top of
+    /// an NSTextView that grows vertically as the user types more lines.
+    /// The header bar visually covers the shell's empty prompt row in the
+    /// terminal grid, so the prompt only ever lives within the editor.
     final class PromptEditorView: NSView {
         weak var owner: SurfaceView?
+
         let scrollView: NSScrollView
         let textView: PromptEditorTextView
-        /// 1px hairline at the top of the bar that visually separates the
-        /// editor from the terminal output above. Drawn INSIDE the bar's
-        /// row reservation so the editor and terminal stack pixel-perfect.
-        let separator: NSBox
 
-        /// Cached row count we last reported to libghostty. Kept in sync
-        /// so we only fire `set_editor_rows` when the value changes.
+        /// 1-row-tall header strip at the top of the editor. Carries the
+        /// prompt label centered horizontally + a 1px separator at its
+        /// bottom edge.
+        let headerView: PromptHeaderView
+
+        /// Cached row count (header + input) we last reported to libghostty.
+        /// Kept in sync so we only fire `set_editor_rows` when it changes.
         private var reportedRows: Int = 0
 
-        /// Height of the top separator in points. Lives INSIDE the
-        /// row-aligned editor area, so it eats one px from the topmost
-        /// text row rather than adding height beyond the row count.
-        private static let separatorHeight: CGFloat = 1
+        /// Combine subscription for owner's pwd changes.
+        private var pwdCancellable: AnyCancellable?
 
         init(owner: SurfaceView) {
             self.owner = owner
             self.scrollView = NSScrollView(frame: .zero)
             self.textView = PromptEditorTextView(frame: .zero)
-            self.separator = NSBox(frame: .zero)
+            self.headerView = PromptHeaderView(frame: .zero)
             super.init(frame: .zero)
 
-            separator.boxType = .separator
-            addSubview(separator)
+            addSubview(headerView)
 
             scrollView.hasVerticalScroller = false
             scrollView.hasHorizontalScroller = false
@@ -48,8 +50,6 @@ extension Ghostty {
             textView.isAutomaticTextReplacementEnabled = false
             textView.isAutomaticSpellingCorrectionEnabled = false
             textView.smartInsertDeleteEnabled = false
-            // Zero vertical inset so text sits flush beneath the
-            // separator; small horizontal inset for readability.
             textView.textContainerInset = NSSize(width: 4, height: 0)
 
             scrollView.documentView = textView
@@ -60,6 +60,12 @@ extension Ghostty {
             textView.contentDidChangeHandler = { [weak self] in
                 self?.syncHeightToContent()
             }
+
+            // Re-pull pwd-derived header text whenever the owning surface's
+            // pwd publishes a new value (shell ran `cd`, etc.).
+            pwdCancellable = owner.$pwd.sink { [weak self] _ in
+                DispatchQueue.main.async { self?.refreshHeaderText() }
+            }
         }
 
         required init?(coder: NSCoder) {
@@ -68,24 +74,23 @@ extension Ghostty {
 
         override func layout() {
             super.layout()
+            guard let owner else { return }
+            let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
             let h = bounds.height
             let w = bounds.width
-            let sepH = Self.separatorHeight
-            // macOS coordinates: y=0 is the bottom. Separator pins to
-            // the very top, scrollView fills everything below it.
-            separator.frame = NSRect(x: 0, y: h - sepH, width: w, height: sepH)
-            scrollView.frame = NSRect(x: 0, y: 0, width: w, height: max(0, h - sepH))
+            // Header is the topmost cellHeight; scroll view fills below it.
+            let headerH = cellHeight
+            headerView.frame = NSRect(x: 0, y: h - headerH, width: w, height: headerH)
+            scrollView.frame = NSRect(x: 0, y: 0, width: w, height: max(0, h - headerH))
         }
 
-        /// Show the bar. The initial row count is computed from the
-        /// (empty) buffer — typically 1 row — and pushed to libghostty
-        /// so the renderer scrolls the terminal up by exactly that many
-        /// rows. The NSTextView grabs first responder so the user can
-        /// type without clicking.
+        /// Show the bar. Computes initial layout (1 header row + 1 input row),
+        /// pushes the row count to libghostty, and grabs first responder.
         func activate(rows: UInt32) {
             guard let owner else { return }
             isHidden = false
             applyTheme()
+            refreshHeaderText()
             syncHeightToContent()
             owner.window?.makeFirstResponder(textView)
         }
@@ -98,10 +103,9 @@ extension Ghostty {
         }
 
         /// Pull theme colors and the terminal's primary font from the
-        /// owning surface and push them into the NSTextView. Also force
-        /// the editor's line height to match the terminal's cell height
-        /// so `usedRect.height / cellHeight` always rounds cleanly to
-        /// the editor's line count.
+        /// owning surface and push them into the NSTextView and the
+        /// header. Also force the editor's line height to match the
+        /// terminal's cell height so the row math always rounds cleanly.
         func applyTheme() {
             guard let owner else { return }
             let bg = NSColor(owner.derivedConfig.backgroundColor)
@@ -115,8 +119,6 @@ extension Ghostty {
             let font = loadTerminalFont(for: owner)
             textView.font = font
 
-            // Match terminal cell height so the editor's row math
-            // mirrors the terminal grid's row math exactly.
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
             let para = NSMutableParagraphStyle()
             para.minimumLineHeight = cellHeight
@@ -127,14 +129,16 @@ extension Ghostty {
                 .foregroundColor: fg,
                 .paragraphStyle: para,
             ]
-            // Re-apply paragraph style to existing text (if any) so a
-            // theme reload mid-edit picks up the new metrics.
             if let storage = textView.textStorage, storage.length > 0 {
                 storage.addAttribute(
                     .paragraphStyle,
                     value: para,
                     range: NSRange(location: 0, length: storage.length))
             }
+
+            headerView.applyTheme(bg: bg, fg: fg, accent: caret, font: font)
+            // Re-layout so the header height tracks the new cellHeight.
+            needsLayout = true
         }
 
         /// Borrow a CTFont from libghostty for the terminal's primary
@@ -151,28 +155,25 @@ extension Ghostty {
         }
 
         /// Recompute the editor's row count from the NSTextView's laid-
-        /// out content height and resize/report if it changed. Called on
-        /// every text change AND on activation.
+        /// out content height and resize/report if it changed. Total
+        /// reported rows = 1 (header) + lineCount (input).
         func syncHeightToContent() {
             guard let owner else { return }
             let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
-            let neededRows = currentLineCount(cellHeight: cellHeight)
-            let desiredHeight = CGFloat(neededRows) * cellHeight
+            let inputRows = currentLineCount(cellHeight: cellHeight)
+            let totalRows = 1 + inputRows
+            let desiredHeight = CGFloat(totalRows) * cellHeight
             if abs(frame.height - desiredHeight) > 0.5 {
                 layoutAtBottom(in: owner, height: desiredHeight)
             }
-            if neededRows != reportedRows {
-                reportedRows = neededRows
+            if totalRows != reportedRows {
+                reportedRows = totalRows
                 if let cSurface = owner.surface {
-                    ghostty_surface_set_editor_rows(cSurface, UInt32(neededRows))
+                    ghostty_surface_set_editor_rows(cSurface, UInt32(totalRows))
                 }
             }
         }
 
-        /// Visual line count of the current text. Empty buffer counts as
-        /// one row so the bar never collapses to zero height. Wrapping
-        /// is honored — a long unbroken line that wraps twice counts as
-        /// three rows.
         private func currentLineCount(cellHeight: CGFloat) -> Int {
             guard let lm = textView.layoutManager,
                 let tc = textView.textContainer else { return 1 }
@@ -182,11 +183,36 @@ extension Ghostty {
             return max(1, Int(ceil(used / cellHeight)))
         }
 
+        /// Build the header label from owner.pwd + system info. Format:
+        /// "user@host pwd" — the same shape as a typical shell prompt.
+        func refreshHeaderText() {
+            let user = NSUserName()
+            let rawHost = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+            let host = rawHost
+                .replacingOccurrences(of: ".local", with: "")
+                .replacingOccurrences(of: ".lan", with: "")
+            let pwd = abbreviatePath(owner?.pwd)
+            let composed: String
+            if pwd.isEmpty {
+                composed = "\(user)@\(host)"
+            } else {
+                composed = "\(user)@\(host) \(pwd)"
+            }
+            headerView.setText(composed)
+        }
+
+        private func abbreviatePath(_ path: String?) -> String {
+            guard let path, !path.isEmpty else { return "" }
+            let home = NSHomeDirectory()
+            if path == home { return "~" }
+            if path.hasPrefix(home + "/") {
+                return "~" + path.dropFirst(home.count)
+            }
+            return path
+        }
+
         /// Insert pasted text at the current selection. Called from
-        /// libghostty's editor_paste callback when the editor is
-        /// visible — covers drag-and-drop onto the terminal area,
-        /// right-click paste, and any other path that wasn't already
-        /// going through NSTextView's native Cmd+V.
+        /// libghostty's editor_paste callback when the editor is visible.
         func insertPasted(_ data: String) {
             guard !data.isEmpty else { return }
             let range = textView.selectedRange()
@@ -196,8 +222,6 @@ extension Ghostty {
             }
         }
 
-        /// Commit the current buffer to the PTY (text + CR). Called when
-        /// the user presses Enter inside the text view.
         func commit() {
             guard let owner, let cSurface = owner.surface else { return }
             let payload = textView.string
@@ -209,9 +233,6 @@ extension Ghostty {
             syncHeightToContent()
         }
 
-        /// Move first responder back to the terminal SurfaceView. Called
-        /// on deactivate so the user can drive vim / etc. once the
-        /// editor is hidden.
         func yieldFocusToTerminal() {
             guard let owner, let window = owner.window else { return }
             if window.firstResponder === textView {
@@ -230,19 +251,80 @@ extension Ghostty {
         }
     }
 
-    /// NSTextView subclass that captures Enter (commit). All other keys
-    /// fall through to NSTextView's default editing behavior. Cmd+C is
-    /// overridden so it copies the terminal selection (when present)
-    /// instead of the always-empty editor selection — the editor owns
-    /// typing focus, so Cmd+C from the user's hands needs to do the
-    /// thing the user expects.
+    /// 1-row-tall header strip at the top of the prompt editor. Draws the
+    /// terminal's background, a centered text label (user@host pwd), and a
+    /// 1px hairline at its bottom edge separating the header from the
+    /// input area.
+    final class PromptHeaderView: NSView {
+        private let label: NSTextField
+        private var separatorColor: NSColor = .separatorColor
+
+        override init(frame frameRect: NSRect) {
+            self.label = NSTextField(labelWithString: "")
+            super.init(frame: frameRect)
+            label.alignment = .center
+            label.lineBreakMode = .byTruncatingMiddle
+            label.usesSingleLineMode = true
+            label.maximumNumberOfLines = 1
+            label.isEditable = false
+            label.isSelectable = false
+            label.isBezeled = false
+            label.isBordered = false
+            label.drawsBackground = false
+            label.backgroundColor = .clear
+            label.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(label)
+            NSLayoutConstraint.activate([
+                label.centerXAnchor.constraint(equalTo: centerXAnchor),
+                label.centerYAnchor.constraint(equalTo: centerYAnchor),
+                label.leadingAnchor.constraint(
+                    greaterThanOrEqualTo: leadingAnchor, constant: 8),
+                label.trailingAnchor.constraint(
+                    lessThanOrEqualTo: trailingAnchor, constant: -8),
+            ])
+            wantsLayer = true
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) is not supported")
+        }
+
+        func setText(_ s: String) {
+            label.stringValue = s
+        }
+
+        func applyTheme(bg: NSColor, fg: NSColor, accent: NSColor, font: NSFont) {
+            layer?.backgroundColor = bg.cgColor
+            // Slightly dimmer foreground for the header — it's metadata,
+            // not user content. Falls back to fg if mixing fails.
+            label.textColor = fg.withAlphaComponent(0.65)
+            // Match the terminal font but a touch smaller so the header
+            // reads as a label rather than another line of input.
+            let size = max(10, font.pointSize - 1)
+            label.font = NSFont(descriptor: font.fontDescriptor, size: size) ?? font
+            // The hairline at the bottom edge picks up the cursor color
+            // at moderate alpha for visual continuity with the caret.
+            separatorColor = accent.withAlphaComponent(0.5)
+            needsDisplay = true
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            // 1px hairline along the bottom edge.
+            separatorColor.setFill()
+            let line = NSRect(x: 0, y: 0, width: bounds.width, height: 1)
+            line.fill()
+        }
+    }
+
+    /// NSTextView subclass that captures Enter (commit) and routes Cmd+C
+    /// through the terminal's selection when one exists.
     final class PromptEditorTextView: NSTextView {
         weak var owner: SurfaceView?
         var commitHandler: (() -> Void)?
         var contentDidChangeHandler: (() -> Void)?
 
         override func keyDown(with event: NSEvent) {
-            // Plain Return (no modifiers) → commit the buffer.
             if event.keyCode == 36 &&
                 event.modifierFlags.intersection(
                     [.shift, .command, .option, .control]
@@ -250,25 +332,15 @@ extension Ghostty {
                 commitHandler?()
                 return
             }
-
             super.keyDown(with: event)
         }
 
         override func didChangeText() {
             super.didChangeText()
-            // didChangeText fires for every mutation — typing, paste,
-            // delete — making it the most reliable hook for content-
-            // size changes. NSText.didChangeNotification covers the
-            // same ground; this is a belt-and-suspenders.
             contentDidChangeHandler?()
         }
 
         override func copy(_ sender: Any?) {
-            // If the terminal has a selection, copy that — the user
-            // can't focus the terminal while the editor is up, so a
-            // Cmd+C with terminal text selected must mean "copy the
-            // terminal text". If no terminal selection, fall through to
-            // NSTextView's default (copies the editor's own selection).
             if let cSurface = owner?.surface,
                 ghostty_surface_has_selection(cSurface)
             {

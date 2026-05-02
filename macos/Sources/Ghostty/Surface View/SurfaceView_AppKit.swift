@@ -215,8 +215,17 @@ extension Ghostty {
         /// Event monitor (see individual events for why)
         private var eventMonitor: Any?
 
-        // We need to support being a first responder so that we can get input events
-        override var acceptsFirstResponder: Bool { return true }
+        // We need to support being a first responder so that we can get input
+        // events. EXCEPT when the prompt editor is visible — in that mode the
+        // NSTextView is the sole keyboard target, and refusing first responder
+        // here is the load-bearing guarantee that no typing can ever leak into
+        // the read-only terminal output panel above.
+        override var acceptsFirstResponder: Bool {
+            if let editor = self.promptEditorView, !editor.isHidden {
+                return false
+            }
+            return true
+        }
 
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
             self.markedText = NSMutableAttributedString()

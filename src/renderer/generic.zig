@@ -1310,11 +1310,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // Geometry contract: the apprt's native editor view
                 // covers the bottom N rows of the viewport, where N is
                 // the row count the apprt last reported via
-                // `setEditorRows`. Scroll the terminal up so the
-                // shell's cursor (and the prompt line above it) are
-                // not in the editor's region — otherwise the native
-                // view visually overlays content the user expects to
-                // see.
+                // `setEditorRows`. We scroll the terminal so the shell
+                // cursor (and the prompt content on its row) ends up
+                // AT `editor_top` — i.e., the topmost reserved row.
+                // The apprt's header bar sits exactly there and
+                // visually covers the prompt, which is what the user
+                // wants: the empty current prompt never appears in the
+                // results panel; the prompt info lives in the editor's
+                // own header.
                 if (state.prompt_editor_active) {
                     const trows: usize = self.terminal_state.rows;
                     const desired_rows: usize = @max(1, state.prompt_editor_rows);
@@ -1322,13 +1325,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         const screen = state.terminal.screens.active;
                         const cur_y: usize = screen.cursor.y;
                         const editor_top: usize = trows - desired_rows;
-                        if (cur_y >= editor_top) {
-                            const shift = cur_y - editor_top + 1;
+                        if (cur_y > editor_top) {
+                            const shift = cur_y - editor_top;
                             state.terminal.scrollUp(shift) catch {};
                             const cur_x = screen.cursor.x;
                             screen.cursorAbsolute(
                                 cur_x,
-                                @intCast(cur_y - shift),
+                                @intCast(editor_top),
                             );
                         }
                     }
