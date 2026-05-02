@@ -97,6 +97,12 @@ prompt_editor_view_top: usize = 0,
 /// "scrolled back this many rows from live".
 prompt_editor_scroll_offset: usize = 0,
 
+/// Whether the editor's caret should be drawn this frame. Tied to
+/// Ghostty's cursor_blink_visible signal so the editor caret blinks
+/// in sync with the terminal cursor (which is currently hidden when
+/// the editor is active).
+prompt_editor_caret_visible: bool = true,
+
 /// The set of available features and their configuration.
 pub const Feature = union(enum) {
     highlight_hyperlinks,
@@ -155,11 +161,13 @@ pub fn setPromptEditorBuffer(
     cursor_byte: usize,
     view_top: usize,
     scroll_offset: usize,
+    caret_visible: bool,
 ) void {
     self.prompt_editor_buffer = buf;
     self.prompt_editor_cursor = cursor_byte;
     self.prompt_editor_view_top = view_top;
     self.prompt_editor_scroll_offset = scroll_offset;
+    self.prompt_editor_caret_visible = caret_visible;
 }
 
 /// Returns a pending image that can be used to copy, convert, upload, etc.
@@ -401,7 +409,8 @@ fn drawPromptEditorBar(
     }
 
     // -- Caret --
-    if (lines.cursor_line >= first_visible_line and
+    if (self.prompt_editor_caret_visible and
+        lines.cursor_line >= first_visible_line and
         lines.cursor_line < first_visible_line + visible_bar_rows)
     {
         const visual_caret_line = lines.cursor_line - first_visible_line;

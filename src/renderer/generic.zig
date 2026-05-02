@@ -1585,6 +1585,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 critical.prompt_editor_cursor,
                 critical.prompt_editor_view_top,
                 critical.prompt_editor_scroll_offset,
+                cursor_blink_visible,
             ) catch |err| {
                 log.warn(
                     "error rebuilding overlay surface err={}",
@@ -2476,6 +2477,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             prompt_editor_cursor: usize,
             prompt_editor_view_top: usize,
             prompt_editor_scroll_offset: usize,
+            prompt_editor_caret_visible: bool,
         ) Overlay.InitError!void {
             // const start = std.time.Instant.now() catch unreachable;
             // const start_micro = std.time.microTimestamp();
@@ -2539,6 +2541,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 prompt_editor_cursor,
                 prompt_editor_view_top,
                 prompt_editor_scroll_offset,
+                prompt_editor_caret_visible,
             );
             overlay.applyFeatures(
                 alloc,
