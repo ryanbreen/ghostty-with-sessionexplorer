@@ -3397,6 +3397,16 @@ pub fn textCallback(self: *Surface, text: []const u8) !void {
     try self.completeClipboardPaste(text, true);
 }
 
+/// Update the renderer's record of how many cell rows the apprt's
+/// native editor view currently occupies. The renderer uses this each
+/// frame to scroll the terminal up so its content sits cleanly above
+/// the editor.
+pub fn setEditorRows(self: *Surface, rows: u32) void {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+    self.renderer_state.prompt_editor_rows = @max(1, rows);
+}
+
 /// Commit a prompt-editor buffer to the PTY. Sends `text + '\r'` as
 /// raw bytes via `write_alloc`, bypassing both the paste pipeline
 /// (which can rewrite newlines and apply bracketed paste) AND the
@@ -6240,6 +6250,21 @@ fn completeClipboardPaste(
     allow_unsafe: bool,
 ) !void {
     if (data.len == 0) return;
+
+    // If the prompt editor is active, redirect the paste into the
+    // apprt's native editor view rather than the PTY. This makes drag-
+    // and-drop, right-click paste on the terminal area, and any other
+    // paste path land in the editor's text view — the same place a
+    // Cmd+V from the user's hands (which goes through NSTextView
+    // natively) would land.
+    {
+        const editor_active = blk: {
+            self.renderer_state.mutex.lock();
+            defer self.renderer_state.mutex.unlock();
+            break :blk self.editor.isActive();
+        };
+        if (editor_active and self.rt_surface.editorPaste(data)) return;
+    }
 
     const encode_opts: input.paste.Options = encode_opts: {
         self.renderer_state.mutex.lock();

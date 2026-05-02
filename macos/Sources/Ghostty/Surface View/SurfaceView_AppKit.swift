@@ -388,6 +388,28 @@ extension Ghostty {
                 }
             }
 
+            ghostty_surface_set_editor_paste_cb(surface) { userdata, dataPtr, len in
+                guard let userdata, let dataPtr else { return }
+                let view = Unmanaged<Ghostty.SurfaceView>
+                    .fromOpaque(userdata).takeUnretainedValue()
+                // Copy the bytes synchronously — the buffer is owned by
+                // libghostty's caller and may not survive past the
+                // return of this callback. We hop to the main queue
+                // afterwards because NSTextView mutation must be on the
+                // main thread.
+                let count = Int(len)
+                let str = dataPtr.withMemoryRebound(
+                    to: UInt8.self,
+                    capacity: count
+                ) { ptr -> String in
+                    let buf = UnsafeBufferPointer(start: ptr, count: count)
+                    return String(decoding: buf, as: UTF8.self)
+                }
+                DispatchQueue.main.async {
+                    view.promptEditorView?.insertPasted(str)
+                }
+            }
+
             // Setup our tracking area so we get mouse moved events
             updateTrackingAreas()
 

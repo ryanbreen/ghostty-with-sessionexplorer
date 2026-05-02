@@ -1185,6 +1185,25 @@ GHOSTTY_API void ghostty_surface_editor_commit(ghostty_surface_t,
                                                   const char*,
                                                   uintptr_t);
 
+// Tell libghostty how many cell rows the apprt's native editor view
+// currently occupies at the bottom of the viewport. The renderer uses
+// this to scroll the terminal up so its content is never covered by
+// the editor. Apprt should call this whenever the editor grows or
+// shrinks.
+GHOSTTY_API void ghostty_surface_set_editor_rows(ghostty_surface_t,
+                                                    uint32_t);
+
+// Editor paste callback. When the editor is active and a paste arrives
+// through libghostty's normal paste path (drag-and-drop, right-click
+// paste on the terminal, paste-binding action, etc.), libghostty fires
+// this instead of forwarding the bytes to the PTY so the apprt's
+// native editor view can absorb the paste.
+typedef void (*ghostty_editor_paste_cb)(void *userdata,
+                                          const char *data,
+                                          uintptr_t len);
+GHOSTTY_API void ghostty_surface_set_editor_paste_cb(ghostty_surface_t,
+                                                        ghostty_editor_paste_cb);
+
 #ifdef __APPLE__
 GHOSTTY_API void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);
 GHOSTTY_API void* ghostty_surface_quicklook_font(ghostty_surface_t);

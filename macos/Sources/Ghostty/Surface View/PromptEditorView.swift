@@ -4,16 +4,24 @@ import GhosttyKit
 extension Ghostty {
     /// Native CoreText prompt-editor bar pinned to the bottom of a SurfaceView.
     /// Wraps an NSTextView in an NSScrollView so the editor can scroll its own
-    /// contents independently of the terminal grid.
+    /// contents independently of the terminal grid. Grows vertically as the
+    /// user types more lines, pushing the terminal output up.
     final class PromptEditorView: NSView {
         weak var owner: SurfaceView?
         let scrollView: NSScrollView
         let textView: PromptEditorTextView
         /// 1px hairline at the top of the bar that visually separates the
-        /// editor from the terminal output above it.
+        /// editor from the terminal output above. Drawn INSIDE the bar's
+        /// row reservation so the editor and terminal stack pixel-perfect.
         let separator: NSBox
 
-        /// Height of the top separator in points.
+        /// Cached row count we last reported to libghostty. Kept in sync
+        /// so we only fire `set_editor_rows` when the value changes.
+        private var reportedRows: Int = 0
+
+        /// Height of the top separator in points. Lives INSIDE the
+        /// row-aligned editor area, so it eats one px from the topmost
+        /// text row rather than adding height beyond the row count.
         private static let separatorHeight: CGFloat = 1
 
         init(owner: SurfaceView) {
@@ -26,10 +34,11 @@ extension Ghostty {
             separator.boxType = .separator
             addSubview(separator)
 
-            scrollView.hasVerticalScroller = true
+            scrollView.hasVerticalScroller = false
             scrollView.hasHorizontalScroller = false
             scrollView.borderType = .noBorder
             scrollView.drawsBackground = true
+            scrollView.autohidesScrollers = true
 
             textView.isRichText = false
             textView.allowsUndo = true
@@ -39,9 +48,8 @@ extension Ghostty {
             textView.isAutomaticTextReplacementEnabled = false
             textView.isAutomaticSpellingCorrectionEnabled = false
             textView.smartInsertDeleteEnabled = false
-            // Zero vertical inset so the first text glyph sits flush
-            // beneath the separator — the user wants the edit area
-            // immediately below the bottom of the terminal results.
+            // Zero vertical inset so text sits flush beneath the
+            // separator; small horizontal inset for readability.
             textView.textContainerInset = NSSize(width: 4, height: 0)
 
             scrollView.documentView = textView
@@ -49,6 +57,9 @@ extension Ghostty {
 
             textView.owner = owner
             textView.commitHandler = { [weak self] in self?.commit() }
+            textView.contentDidChangeHandler = { [weak self] in
+                self?.syncHeightToContent()
+            }
         }
 
         required init?(coder: NSCoder) {
@@ -60,37 +71,37 @@ extension Ghostty {
             let h = bounds.height
             let w = bounds.width
             let sepH = Self.separatorHeight
-            // macOS coordinates: y=0 is bottom. Separator pins to top,
-            // scrollView fills everything below.
+            // macOS coordinates: y=0 is the bottom. Separator pins to
+            // the very top, scrollView fills everything below it.
             separator.frame = NSRect(x: 0, y: h - sepH, width: w, height: sepH)
             scrollView.frame = NSRect(x: 0, y: 0, width: w, height: max(0, h - sepH))
         }
 
-        /// Show the bar at the given desired height (rows × cellHeight). Pins
-        /// to the bottom of the parent SurfaceView and grabs first responder
-        /// so the user can immediately type.
+        /// Show the bar. The initial row count is computed from the
+        /// (empty) buffer — typically 1 row — and pushed to libghostty
+        /// so the renderer scrolls the terminal up by exactly that many
+        /// rows. The NSTextView grabs first responder so the user can
+        /// type without clicking.
         func activate(rows: UInt32) {
             guard let owner else { return }
-            let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
-            let desiredRows = max(2, CGFloat(rows))
-            // Add the separator's height to the natural row-based height
-            // so the visible text area stays exactly `desiredRows` tall
-            // and the separator sits one px above it.
-            let desiredHeight = desiredRows * cellHeight + Self.separatorHeight
-            layoutAtBottom(in: owner, height: desiredHeight)
             isHidden = false
+            applyTheme()
+            syncHeightToContent()
             owner.window?.makeFirstResponder(textView)
         }
 
         func deactivate() {
             isHidden = true
             textView.string = ""
+            reportedRows = 0
             yieldFocusToTerminal()
         }
 
         /// Pull theme colors and the terminal's primary font from the
-        /// owning surface and push them into the NSTextView. Called on
-        /// activate and on derivedConfig changes.
+        /// owning surface and push them into the NSTextView. Also force
+        /// the editor's line height to match the terminal's cell height
+        /// so `usedRect.height / cellHeight` always rounds cleanly to
+        /// the editor's line count.
         func applyTheme() {
             guard let owner else { return }
             let bg = NSColor(owner.derivedConfig.backgroundColor)
@@ -101,18 +112,29 @@ extension Ghostty {
             textView.insertionPointColor = caret
             scrollView.backgroundColor = bg
 
-            // Pull the terminal's exact CoreText primary font (already
-            // scaled for display points) from libghostty so the editor
-            // reads as the same surface as the rest of the terminal.
-            // Falls back to the system mono if the surface isn't ready
-            // or libghostty isn't using CoreText.
             let font = loadTerminalFont(for: owner)
             textView.font = font
 
+            // Match terminal cell height so the editor's row math
+            // mirrors the terminal grid's row math exactly.
+            let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
+            let para = NSMutableParagraphStyle()
+            para.minimumLineHeight = cellHeight
+            para.maximumLineHeight = cellHeight
+            textView.defaultParagraphStyle = para
             textView.typingAttributes = [
                 .font: font,
                 .foregroundColor: fg,
+                .paragraphStyle: para,
             ]
+            // Re-apply paragraph style to existing text (if any) so a
+            // theme reload mid-edit picks up the new metrics.
+            if let storage = textView.textStorage, storage.length > 0 {
+                storage.addAttribute(
+                    .paragraphStyle,
+                    value: para,
+                    range: NSRange(location: 0, length: storage.length))
+            }
         }
 
         /// Borrow a CTFont from libghostty for the terminal's primary
@@ -128,6 +150,52 @@ extension Ghostty {
             return ctFont as NSFont
         }
 
+        /// Recompute the editor's row count from the NSTextView's laid-
+        /// out content height and resize/report if it changed. Called on
+        /// every text change AND on activation.
+        func syncHeightToContent() {
+            guard let owner else { return }
+            let cellHeight = owner.cellSize.height > 0 ? owner.cellSize.height : 17
+            let neededRows = currentLineCount(cellHeight: cellHeight)
+            let desiredHeight = CGFloat(neededRows) * cellHeight
+            if abs(frame.height - desiredHeight) > 0.5 {
+                layoutAtBottom(in: owner, height: desiredHeight)
+            }
+            if neededRows != reportedRows {
+                reportedRows = neededRows
+                if let cSurface = owner.surface {
+                    ghostty_surface_set_editor_rows(cSurface, UInt32(neededRows))
+                }
+            }
+        }
+
+        /// Visual line count of the current text. Empty buffer counts as
+        /// one row so the bar never collapses to zero height. Wrapping
+        /// is honored — a long unbroken line that wraps twice counts as
+        /// three rows.
+        private func currentLineCount(cellHeight: CGFloat) -> Int {
+            guard let lm = textView.layoutManager,
+                let tc = textView.textContainer else { return 1 }
+            lm.ensureLayout(for: tc)
+            let used = lm.usedRect(for: tc).height
+            if used <= 0 { return 1 }
+            return max(1, Int(ceil(used / cellHeight)))
+        }
+
+        /// Insert pasted text at the current selection. Called from
+        /// libghostty's editor_paste callback when the editor is
+        /// visible — covers drag-and-drop onto the terminal area,
+        /// right-click paste, and any other path that wasn't already
+        /// going through NSTextView's native Cmd+V.
+        func insertPasted(_ data: String) {
+            guard !data.isEmpty else { return }
+            let range = textView.selectedRange()
+            if textView.shouldChangeText(in: range, replacementString: data) {
+                textView.replaceCharacters(in: range, with: data)
+                textView.didChangeText()
+            }
+        }
+
         /// Commit the current buffer to the PTY (text + CR). Called when
         /// the user presses Enter inside the text view.
         func commit() {
@@ -138,11 +206,12 @@ extension Ghostty {
                 ghostty_surface_editor_commit(cSurface, cstr, UInt(len))
             }
             textView.string = ""
+            syncHeightToContent()
         }
 
-        /// Move first responder back to the terminal SurfaceView. Called on
-        /// deactivate so the user can drive vim / etc. once the editor
-        /// is hidden.
+        /// Move first responder back to the terminal SurfaceView. Called
+        /// on deactivate so the user can drive vim / etc. once the
+        /// editor is hidden.
         func yieldFocusToTerminal() {
             guard let owner, let window = owner.window else { return }
             if window.firstResponder === textView {
@@ -170,6 +239,7 @@ extension Ghostty {
     final class PromptEditorTextView: NSTextView {
         weak var owner: SurfaceView?
         var commitHandler: (() -> Void)?
+        var contentDidChangeHandler: (() -> Void)?
 
         override func keyDown(with event: NSEvent) {
             // Plain Return (no modifiers) → commit the buffer.
@@ -182,6 +252,15 @@ extension Ghostty {
             }
 
             super.keyDown(with: event)
+        }
+
+        override func didChangeText() {
+            super.didChangeText()
+            // didChangeText fires for every mutation — typing, paste,
+            // delete — making it the most reliable hook for content-
+            // size changes. NSText.didChangeNotification covers the
+            // same ground; this is a belt-and-suspenders.
+            contentDidChangeHandler?()
         }
 
         override func copy(_ sender: Any?) {

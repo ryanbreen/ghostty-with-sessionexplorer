@@ -15,6 +15,12 @@ pub fn deinit(self: *Self) void {
     _ = self;
 }
 
+/// No native editor view in the GTK apprt — pastes always fall through
+/// to the normal paste pipeline.
+pub fn editorPaste(_: *Self, _: []const u8) bool {
+    return false;
+}
+
 /// Returns the GObject surface for this apprt surface. This is a function
 /// so we can add some extra logic if we ever have to here.
 pub fn gobj(self: *Self) *Surface {

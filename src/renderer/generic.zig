@@ -1308,18 +1308,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
 
                 // Geometry contract: the apprt's native editor view
-                // covers the bottom N rows of the viewport. Scroll the
-                // terminal up so the shell's cursor (and the prompt
-                // line above it) are not in the editor's region —
-                // otherwise the native view visually overlays content
-                // the user expects to see. We use a fixed 2-row
-                // reservation here because the renderer doesn't know
-                // the apprt view's exact height; the apprt is free to
-                // grow taller and overlay shell output, but a 2-row
-                // floor keeps the prompt line itself safe.
+                // covers the bottom N rows of the viewport, where N is
+                // the row count the apprt last reported via
+                // `setEditorRows`. Scroll the terminal up so the
+                // shell's cursor (and the prompt line above it) are
+                // not in the editor's region — otherwise the native
+                // view visually overlays content the user expects to
+                // see.
                 if (state.prompt_editor_active) {
                     const trows: usize = self.terminal_state.rows;
-                    const desired_rows: usize = 2;
+                    const desired_rows: usize = @max(1, state.prompt_editor_rows);
                     if (trows > desired_rows) {
                         const screen = state.terminal.screens.active;
                         const cur_y: usize = screen.cursor.y;

@@ -16,4 +16,10 @@ pub const App = struct {
         return false;
     }
 };
-pub const Surface = struct {};
+pub const Surface = struct {
+    /// No native editor view in this apprt — pastes always fall through
+    /// to the normal paste pipeline.
+    pub fn editorPaste(_: *Surface, _: []const u8) bool {
+        return false;
+    }
+};

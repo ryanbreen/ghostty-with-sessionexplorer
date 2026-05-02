@@ -38,6 +38,13 @@ mouse: Mouse = .{},
 /// `prompt_editor.isActive()` each frame.
 prompt_editor_active: bool = false,
 
+/// Number of cell rows the apprt's native editor view currently
+/// occupies at the bottom of the viewport. Updated by Surface (under
+/// `mutex`) when the apprt calls `ghostty_surface_set_editor_rows`.
+/// The renderer uses this to size the scroll-up reservation so the
+/// terminal's content always sits cleanly above the editor.
+prompt_editor_rows: u32 = 1,
+
 /// Pointer to the prompt editor on the owning Surface. The renderer
 /// uses this only to fire `activate()` / `deactivate()` based on the
 /// terminal cursor's `semantic_content`; the editor's state-change

@@ -501,6 +501,21 @@ pub const Surface = struct {
     /// surface's userdata.
     editor_state_cb: ?*const fn (?*anyopaque, bool, u32) callconv(.c) void = null,
 
+    /// Callback fired when libghostty wants to redirect a paste into
+    /// the apprt's native editor view (set via
+    /// `ghostty_surface_set_editor_paste_cb`).
+    editor_paste_cb: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void = null,
+
+    /// Try to route the given paste data into the apprt's native editor
+    /// view. Returns true if the callback consumed the paste; false if
+    /// no callback is registered and the caller should fall back to
+    /// normal paste handling.
+    pub fn editorPaste(self: *Surface, data: []const u8) bool {
+        const cb = self.editor_paste_cb orelse return false;
+        cb(self.userdata, data.ptr, data.len);
+        return true;
+    }
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -1949,6 +1964,28 @@ pub const CAPI = struct {
     ) callconv(.c) void {
         const s: *Surface = @ptrCast(@alignCast(ud orelse return));
         if (s.editor_state_cb) |cb| cb(s.userdata, active, rows);
+    }
+
+    /// Update libghostty's record of how many cell rows the apprt's
+    /// native editor view occupies. The renderer uses this each frame
+    /// to scroll the terminal up so its content sits cleanly above the
+    /// editor. May be called any time after activation.
+    export fn ghostty_surface_set_editor_rows(
+        surface: *Surface,
+        rows: u32,
+    ) void {
+        surface.core_surface.setEditorRows(rows);
+    }
+
+    /// Register a callback that consumes pastes routed through
+    /// libghostty's normal paste path while the editor is active. When
+    /// set, the callback receives the bytes instead of the PTY so the
+    /// apprt's native editor view can absorb the paste.
+    export fn ghostty_surface_set_editor_paste_cb(
+        surface: *Surface,
+        cb: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+    ) void {
+        surface.editor_paste_cb = cb;
     }
 
     /// Set the preedit text for the surface. This is used for IME
