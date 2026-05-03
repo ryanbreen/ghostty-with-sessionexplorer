@@ -431,22 +431,38 @@ extension Ghostty {
             if popoverIsShown {
                 return acceptPopoverSelectionFully()
             }
-            // If a ghost is showing, Tab accepts it.
-            if textView.acceptGhost() {
-                syncHeightToContent()
-                return true
-            }
-            // Otherwise: query the engine. Single match → insert
-            // suffix. Multiple matches → open popover.
+
+            // ALWAYS query the engine FIRST so we can decide between
+            // popover (2+ matches) and accept (1 match). The ghost is
+            // a "preview of one possible completion" — but if there
+            // are alternatives, the user almost certainly wants to
+            // see them on Tab, not silently accept the first one.
             let line = textView.string
             let cursor = textView.selectedRange().location
             let pwd = owner?.pwd ?? FileManager.default.currentDirectoryPath
             let matches = completionEngine.allTabMatches(
                 line: line, cursor: cursor, pwd: pwd)
-            if matches.isEmpty { return true }
+
+            if matches.count >= 2 {
+                // Dismiss the ghost — its presence would otherwise
+                // visually duplicate one of the popover entries and
+                // confuse what's selected.
+                textView.setGhost(nil)
+                showCompletionPopover(matches: matches)
+                return true
+            }
+
             if matches.count == 1 {
-                let suffix = matches[0].suffix(
-                    after: completionEngine.currentWord(line: line, cursor: cursor))
+                // Unique match. If the ghost happens to already be
+                // showing the same text, accept it; otherwise insert
+                // the suffix freshly.
+                if textView.acceptGhost() {
+                    syncHeightToContent()
+                    return true
+                }
+                let partial = completionEngine.currentWord(
+                    line: line, cursor: cursor)
+                let suffix = matches[0].suffix(after: partial)
                 if !suffix.isEmpty {
                     textView.insertText(
                         suffix,
@@ -456,7 +472,9 @@ extension Ghostty {
                 }
                 return true
             }
-            showCompletionPopover(matches: matches)
+
+            // No matches: consume Tab so a literal tab char doesn't
+            // get inserted, but otherwise do nothing.
             return true
         }
 
