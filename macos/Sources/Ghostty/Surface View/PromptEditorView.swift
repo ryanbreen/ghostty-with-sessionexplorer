@@ -36,6 +36,14 @@ extension Ghostty {
         /// per the user's preference for "Up arrow shows what I ran
         /// in THIS terminal, nothing else".
         private var history: [String] = []
+
+        /// Metadata for every block separator we've injected this
+        /// session, in commit order. Used by the resize-driven
+        /// rewrite — we count separator rows in the viewport and
+        /// match the last N to the suffix of this list, so we don't
+        /// have to re-extract the label/stamp from cells (which
+        /// can be truncated by a narrow resize).
+        private var injectedSeparators: [(label: String, stamp: String)] = []
         /// Current index when scrolling history with Up/Down. nil
         /// means "not navigating" (Up will start a new nav session).
         private var historyIndex: Int?
@@ -697,7 +705,9 @@ extension Ghostty {
             // started — restoring the prompt-context that the bare
             // shell-echo of `ls` (without our editor's prompt header)
             // otherwise lacks.
-            let sep = buildBlockSeparator(command: payload, owner: owner)
+            let meta = currentSeparatorMetadata(command: payload)
+            injectedSeparators.append(meta)
+            let sep = buildBlockSeparator(label: meta.label, stamp: meta.stamp)
             sep.withCString { cstr in
                 ghostty_surface_inject_output(cSurface, cstr, UInt(strlen(cstr)))
             }
@@ -732,29 +742,26 @@ extension Ghostty {
             return prefix + middle + suffix
         }
 
-        private func buildBlockSeparator(
-            command: String,
-            owner: SurfaceView
-        ) -> String {
-            let geom = currentGeometry()
-            let cols = max(20, Int(geom.cols))
-
+        /// Compute the (label, stamp) pair for a freshly-committed
+        /// command. Pulled out of `buildBlockSeparator` so commit can
+        /// stash it on `injectedSeparators` BEFORE building the line —
+        /// the resize-driven rewrite then matches each visible
+        /// separator row to an entry from this list (last-N suffix),
+        /// so we never have to re-extract label/stamp from cells that
+        /// may have been truncated by a narrow resize.
+        private func currentSeparatorMetadata(
+            command: String
+        ) -> (label: String, stamp: String) {
             // Match the macOS menu-bar date/time format:
             //   "Sun May 3 4:54 a.m."
-            // - EEE / MMM / d → no leading zeros
-            // - h:mm → 12-hour, hour without leading zero
-            // - amSymbol / pmSymbol overrides default "AM"/"PM" → "a.m."/"p.m."
             let formatter = DateFormatter()
             formatter.dateFormat = "EEE MMM d h:mm a"
             formatter.amSymbol = "a.m."
             formatter.pmSymbol = "p.m."
             let stamp = formatter.string(from: Date())
 
-            // The label inside the separator is the captured shell
-            // prompt (e.g. "wrb@Mac ghostty %") + the typed command —
-            // exactly what a normal terminal entry looks like. Falls
-            // back to derived `user@host pwd %` when no prompt is
-            // cached yet.
+            // Label = captured shell prompt + typed command, capped to
+            // 160 chars so a giant paste can't blow up the rule width.
             let oneLineCmd = command
                 .replacingOccurrences(of: "\n", with: " ")
                 .trimmingCharacters(in: .whitespaces)
@@ -763,12 +770,12 @@ extension Ghostty {
                 ? oneLineCmd
                 : "\(promptText) \(oneLineCmd)"
             let label = String(labelRaw.prefix(160))
+            return (label, stamp)
+        }
 
-            // Heavier glyph (U+2501 ━) + bold + cyan = visible without
-            // shouting. Two cells of padding around the label so the
-            // text breathes inside the rule.
+        private func buildBlockSeparator(label: String, stamp: String) -> String {
+            let cols = max(20, Int(currentGeometry().cols))
             let body = separatorBody(label: label, stamp: stamp, cols: cols)
-
             // Leading \r\n → leave one blank row above the separator
             //   for breathing room (the \r resets cursor X in case it
             //   was parked at the editor's input column on commit).
@@ -800,8 +807,18 @@ extension Ghostty {
         /// Find every block-separator row in the visible viewport and
         /// rewrite it at the current column count, so resizes (font
         /// change, split) don't leave truncated/short rules behind.
+        ///
+        /// We don't try to parse label/stamp out of the cells —
+        /// narrowing chops the trailing `━━━` and `<stamp>` off, which
+        /// would defeat any structural parser. Instead we scan for
+        /// rows that LOOK like a separator (loose: starts with several
+        /// `━`), count how many we find (N), and rewrite them with
+        /// the LAST N entries of `injectedSeparators`. That mapping is
+        /// correct as long as separators stay in commit order in the
+        /// scrollback, which they do.
         private func rewriteBlockSeparators() {
             guard let owner, let cSurface = owner.surface else { return }
+            guard !injectedSeparators.isEmpty else { return }
 
             let viewSel = ghostty_selection_s(
                 top_left: ghostty_point_s(
@@ -820,26 +837,34 @@ extension Ghostty {
             guard let cstr = textBuf.text else { return }
             let viewportText = String(cString: cstr)
 
-            let cols = max(20, Int(currentGeometry().cols))
-            var rewrites: [(row: Int, body: String)] = []
+            var separatorRows: [Int] = []
             for (idx, raw) in viewportText
                 .components(separatedBy: "\n")
                 .enumerated()
             {
-                guard let (label, stamp) = parseSeparator(raw) else { continue }
-                let body = separatorBody(label: label, stamp: stamp, cols: cols)
-                rewrites.append((row: idx + 1, body: body))  // ANSI: 1-indexed
+                if isSeparatorRow(raw) {
+                    separatorRows.append(idx)
+                }
             }
-            guard !rewrites.isEmpty else { return }
+            guard !separatorRows.isEmpty else { return }
 
-            // One ANSI sequence: save cursor → for each row,
-            // position+erase+write → restore cursor. Single injection
-            // keeps cursor state consistent.
+            // If the viewport shows more separators than we've tracked,
+            // we can't reliably map them — bail rather than guess.
+            // (Shouldn't happen in normal use; could only occur if the
+            // editor was re-instantiated against an existing scrollback.)
+            let count = separatorRows.count
+            guard count <= injectedSeparators.count else { return }
+            let metadata = Array(injectedSeparators.suffix(count))
+
+            let cols = max(20, Int(currentGeometry().cols))
             var ansi = "\u{1B}[s"
-            for r in rewrites {
-                ansi += "\u{1B}[\(r.row);1H"
+            for (i, rowIdx) in separatorRows.enumerated() {
+                let (label, stamp) = metadata[i]
+                let body = separatorBody(
+                    label: label, stamp: stamp, cols: cols)
+                ansi += "\u{1B}[\(rowIdx + 1);1H"  // ANSI rows are 1-indexed
                 ansi += "\u{1B}[2K"
-                ansi += "\u{1B}[1;36m\(r.body)\u{1B}[0m"
+                ansi += "\u{1B}[1;36m\(body)\u{1B}[0m"
             }
             ansi += "\u{1B}[u"
 
@@ -849,34 +874,15 @@ extension Ghostty {
             }
         }
 
-        /// Returns (label, stamp) if the line is one of our block
-        /// separators, nil otherwise. Format we expect:
-        ///   ━━━  <label>  ━━━…━━━ <stamp> ━━━
-        private func parseSeparator(_ line: String) -> (String, String)? {
+        /// Loose match: any row that starts with a run of heavy
+        /// horizontal-bar glyphs counts as a separator we wrote. This
+        /// has to survive truncation from narrow resizes (which lop
+        /// off the trailing `━━━` + stamp), so we only check the
+        /// PREFIX. Three glyphs is enough to filter out incidental
+        /// uses of the character in normal output.
+        private func isSeparatorRow(_ line: String) -> Bool {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("━") && trimmed.hasSuffix("━") else { return nil }
-            var segments: [String] = []
-            var current = ""
-            var dashRun = 0
-            for ch in trimmed {
-                if ch == "━" {
-                    if dashRun == 0 && !current.isEmpty {
-                        let seg = current.trimmingCharacters(in: .whitespaces)
-                        if !seg.isEmpty { segments.append(seg) }
-                        current = ""
-                    }
-                    dashRun += 1
-                } else {
-                    dashRun = 0
-                    current.append(ch)
-                }
-            }
-            if !current.isEmpty {
-                let seg = current.trimmingCharacters(in: .whitespaces)
-                if !seg.isEmpty { segments.append(seg) }
-            }
-            guard segments.count == 2 else { return nil }
-            return (segments[0], segments[1])
+            return trimmed.hasPrefix("━━━")
         }
 
         func yieldFocusToTerminal() {
