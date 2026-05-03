@@ -352,11 +352,13 @@ extension Ghostty {
             let middle = String(repeating: "━", count: dashes)
             let body = prefix + middle + suffix
 
-            // Leading \r → start at column 0 (cursor was parked at
-            // the editor's input column when commit fired).
+            // Leading \r\n → leave one blank row above the separator
+            //   for breathing room (the \r resets cursor X in case it
+            //   was parked at the editor's input column on commit).
             // \x1b[1;36m → bold + cyan.
-            // Trailing \r\n → next line for the shell's echo.
-            return "\r\u{1B}[1;36m\(body)\u{1B}[0m\r\n"
+            // Trailing \r\n → next line for the shell's echo to land
+            //   on (the stream handler will then `deleteLines` it).
+            return "\r\n\u{1B}[1;36m\(body)\u{1B}[0m\r\n"
         }
 
         func yieldFocusToTerminal() {
