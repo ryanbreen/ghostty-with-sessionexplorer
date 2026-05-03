@@ -1193,6 +1193,22 @@ GHOSTTY_API void ghostty_surface_editor_commit(ghostty_surface_t,
 GHOSTTY_API void ghostty_surface_set_editor_rows(ghostty_surface_t,
                                                     uint32_t);
 
+// Inject bytes directly into the terminal stream — bypasses the shell.
+// Bytes are interpreted exactly like PTY output: ANSI escapes,
+// printable cells, line feeds. Used by the native editor to draw
+// block separators between command outputs.
+GHOSTTY_API void ghostty_surface_inject_output(ghostty_surface_t,
+                                                  const char*,
+                                                  uintptr_t);
+
+// Find the command containing viewport row `viewport_y` (0 = top of
+// viewport) and return the text of its output region — rows from the
+// prompt-row+1 down to the next prompt row. Apprt should free the
+// result with `ghostty_surface_free_text`.
+GHOSTTY_API bool ghostty_surface_command_output_at(ghostty_surface_t,
+                                                      uint32_t,
+                                                      ghostty_text_s*);
+
 // Geometry the apprt's editor view needs to size itself: the row
 // count between the shell's cursor row and the viewport's bottom
 // (the "natural" editor area), and the renderer's bottom padding in

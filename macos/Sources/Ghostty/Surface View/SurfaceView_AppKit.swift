@@ -1623,6 +1623,24 @@ extension Ghostty {
             }
             menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
 
+            // "Copy Command Output" — uses the click position to figure
+            // out which command's output region the right-click landed
+            // on, then copies the text of that region. Handy when the
+            // editor's block separators have made each output its own
+            // visually-separated chunk.
+            let clickInSurface = self.convert(event.locationInWindow, from: nil)
+            let cellH = self.cellSize.height
+            if cellH > 0 {
+                let topYFromTop = max(0, self.bounds.height - clickInSurface.y)
+                let viewportRow = Int(floor(topYFromTop / cellH))
+                let copyOutputItem = menu.addItem(
+                    withTitle: "Copy Command Output",
+                    action: #selector(copyCommandOutputForRow(_:)),
+                    keyEquivalent: "")
+                copyOutputItem.target = self
+                copyOutputItem.representedObject = NSNumber(value: viewportRow)
+            }
+
             menu.addItem(.separator())
             item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
@@ -1773,6 +1791,34 @@ extension Ghostty {
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
             }
+        }
+
+        /// Backing for the right-click "Copy Command Output" menu item.
+        /// The menu item carries the viewport row of the click in its
+        /// `representedObject`; we pass it through to libghostty's
+        /// `command_output_at` to find the prompt-bounded output region
+        /// and copy the text to the system clipboard.
+        @objc func copyCommandOutputForRow(_ sender: NSMenuItem) {
+            guard let row = (sender.representedObject as? NSNumber)?.intValue,
+                let surface = self.surface
+            else { return }
+
+            var text = ghostty_text_s()
+            guard ghostty_surface_command_output_at(
+                surface,
+                UInt32(max(0, row)),
+                &text
+            ) else { return }
+            defer { ghostty_surface_free_text(surface, &text) }
+            guard let cstr = text.text else { return }
+
+            let str = String(cString: cstr)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !str.isEmpty else { return }
+
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(str, forType: .string)
         }
 
         @IBAction func changeTitle(_ sender: Any) {

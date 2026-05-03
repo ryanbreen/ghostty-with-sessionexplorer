@@ -1977,6 +1977,54 @@ pub const CAPI = struct {
         surface.core_surface.setEditorRows(rows);
     }
 
+    /// Inject bytes directly into the terminal stream — bypasses the
+    /// shell. Bytes are interpreted exactly like PTY output: ANSI
+    /// escapes, printable cells, line feeds. Used by the native
+    /// editor to draw block separators between command outputs.
+    export fn ghostty_surface_inject_output(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) void {
+        surface.core_surface.injectOutput(ptr[0..len]);
+    }
+
+    /// Find the command containing viewport row `viewport_y` (0 = top
+    /// of viewport) and return the text of its output region — i.e.
+    /// the rows from the prompt-row+1 down to the next prompt row.
+    /// Returns true on success; the apprt should free the result with
+    /// `ghostty_surface_free_text`. Returns false if no prompt was
+    /// found above the click or the output region is empty.
+    export fn ghostty_surface_command_output_at(
+        surface: *Surface,
+        viewport_y: u32,
+        result: *Text,
+    ) bool {
+        const text = surface.core_surface.commandOutputAt(
+            global.alloc,
+            @intCast(viewport_y),
+        ) catch |err| {
+            log.warn("error reading command output err={}", .{err});
+            return false;
+        } orelse return false;
+
+        const vp: CoreSurface.Text.Viewport = text.viewport orelse .{
+            .tl_px_x = -1,
+            .tl_px_y = -1,
+            .offset_start = 0,
+            .offset_len = 0,
+        };
+        result.* = .{
+            .tl_px_x = vp.tl_px_x,
+            .tl_px_y = vp.tl_px_y,
+            .offset_start = vp.offset_start,
+            .offset_len = vp.offset_len,
+            .text = text.text.ptr,
+            .text_len = text.text.len,
+        };
+        return true;
+    }
+
     /// Geometry the apprt's editor view needs to size itself: the row
     /// count between the shell's cursor row and the viewport's bottom
     /// (the "natural" editor area), and the renderer's bottom padding

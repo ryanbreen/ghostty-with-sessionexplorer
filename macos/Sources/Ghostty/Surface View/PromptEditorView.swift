@@ -281,12 +281,64 @@ extension Ghostty {
         func commit() {
             guard let owner, let cSurface = owner.surface else { return }
             let payload = textView.string
+
+            // Block separator: write a styled horizontal rule with the
+            // command name + timestamp into the terminal cells before
+            // we ship the command to the PTY. The shell's echo of the
+            // command lands on the line below the separator, then the
+            // command's output flows. When the user scrolls back
+            // through history, the separator marks where each command
+            // started — restoring the prompt-context that the bare
+            // shell-echo of `ls` (without our editor's prompt header)
+            // otherwise lacks.
+            let sep = buildBlockSeparator(command: payload, owner: owner)
+            sep.withCString { cstr in
+                ghostty_surface_inject_output(cSurface, cstr, UInt(strlen(cstr)))
+            }
+
             payload.withCString { cstr in
                 let len = strlen(cstr)
                 ghostty_surface_editor_commit(cSurface, cstr, UInt(len))
             }
             textView.string = ""
             syncHeightToContent()
+        }
+
+        /// Build the per-command block separator that gets written to
+        /// the terminal cells on commit. Format:
+        ///
+        ///     ─── ls ─────────────────────────────────── 14:59 ───
+        ///
+        /// Styled dim cyan via ANSI. Width is computed to fit the
+        /// current grid column count exactly so the line spans the
+        /// viewport edge-to-edge.
+        private func buildBlockSeparator(
+            command: String,
+            owner: SurfaceView
+        ) -> String {
+            let cellW = max(1, owner.cellSize.width)
+            let approxCols = max(40, Int(floor(owner.bounds.width / cellW)))
+
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            let stamp = formatter.string(from: Date())
+
+            // Trim long commands + collapse newlines to keep the
+            // separator a single visual row.
+            let oneLine = command
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            let cmd = String(oneLine.prefix(60))
+
+            let prefix = "─── \(cmd) "
+            let suffix = " \(stamp) ───"
+            let dashes = max(3, approxCols - prefix.count - suffix.count)
+            let middle = String(repeating: "─", count: dashes)
+            let body = prefix + middle + suffix
+
+            // Dim + cyan; reset; LF (terminal does CR via line discipline
+            // but inject_output bypasses that, so we send CR+LF explicitly).
+            return "\u{1B}[2;36m\(body)\u{1B}[0m\r\n"
         }
 
         func yieldFocusToTerminal() {

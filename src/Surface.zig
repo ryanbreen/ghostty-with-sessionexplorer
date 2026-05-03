@@ -3407,6 +3407,79 @@ pub fn setEditorRows(self: *Surface, rows: u32) void {
     self.renderer_state.prompt_editor_rows = @max(1, rows);
 }
 
+/// Write bytes directly to the terminal as if they came from the PTY.
+/// Used by the apprt to inject decoration (block separators between
+/// command output, header chrome, etc.) without going through the
+/// shell. Bytes are processed by the same stream parser used for PTY
+/// output, so ANSI escape codes work normally.
+pub fn injectOutput(self: *Surface, bytes: []const u8) void {
+    self.io.processOutput(bytes);
+}
+
+/// Given a viewport row Y (0 = top of viewport, increases downward),
+/// find the command whose prompt row is at-or-above Y and whose output
+/// extends from prompt_row+1 down to the row before the NEXT prompt
+/// (or the end of the viewport, whichever comes first). Returns the
+/// text of that range, or null if no prompt was found.
+///
+/// Used by the apprt's right-click "Copy Command Output" menu item.
+/// Caller owns the returned `Text`.
+pub fn commandOutputAt(
+    self: *Surface,
+    alloc: Allocator,
+    viewport_y: usize,
+) !?Text {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+
+    const screen = self.io.terminal.screens.active;
+    const total_rows = screen.pages.rows;
+    if (viewport_y >= total_rows) return null;
+
+    // Walk up from viewport_y until we find a row with a prompt
+    // marker. That's the prompt of the command we're reading.
+    var prompt_row: ?usize = null;
+    var i: usize = viewport_y;
+    while (true) {
+        const pin = screen.pages.pin(.{
+            .viewport = .{ .x = 0, .y = @intCast(i) },
+        }) orelse break;
+        if (pin.rowAndCell().row.semantic_prompt == .prompt) {
+            prompt_row = i;
+            break;
+        }
+        if (i == 0) break;
+        i -= 1;
+    }
+    const start = prompt_row orelse return null;
+
+    // Walk DOWN from start+1 until we find the next prompt row OR
+    // we run out of rows. The end (exclusive) is the boundary.
+    var end: usize = total_rows;
+    var j: usize = start + 1;
+    while (j < total_rows) : (j += 1) {
+        const pin = screen.pages.pin(.{
+            .viewport = .{ .x = 0, .y = @intCast(j) },
+        }) orelse break;
+        if (pin.rowAndCell().row.semantic_prompt == .prompt) {
+            end = j;
+            break;
+        }
+    }
+
+    if (end <= start + 1) return null;
+
+    const tl_pin = screen.pages.pin(.{
+        .viewport = .{ .x = 0, .y = @intCast(start + 1) },
+    }) orelse return null;
+    const br_pin = screen.pages.pin(.{
+        .viewport = .{ .x = 0, .y = @intCast(end - 1) },
+    }) orelse return null;
+
+    const sel = terminal.Selection.init(tl_pin, br_pin, false);
+    return try self.dumpTextLocked(alloc, sel);
+}
+
 /// Geometry the apprt's native editor view needs to size itself
 /// correctly. `avail_rows` is the number of cell rows from the shell's
 /// cursor row down to the bottom of the viewport — this is the
