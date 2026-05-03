@@ -86,6 +86,17 @@ final class CompletionEngine {
         "stat", "subl", "tail", "touch", "vi", "vim", "which", "zip",
     ]
 
+    /// Commands whose argument is an SSH-style host. Argument
+    /// completion for these uses `~/.ssh/config` instead of the
+    /// filesystem.
+    private static let sshHostCommands: Set<String> = [
+        "ssh", "scp", "sftp", "rsync", "mosh",
+    ]
+
+    /// Cached SSH host list, refreshed every `cacheTTL` seconds.
+    private var sshHostCache: [String] = []
+    private var sshHostCacheBuiltAt: Date = .distantPast
+
     // MARK: - Public API
 
     /// Returns the best inline completion candidate for the given
@@ -137,12 +148,9 @@ final class CompletionEngine {
         // Always show for path-like words (contain /, start with ~ or .).
         let w = parsed.currentWord
         if w.contains("/") || w.hasPrefix("~") || w.hasPrefix(".") { return true }
-        // Show for arguments only when the command is a known
-        // file-taker. Skips noisy ghosts for `ssh foo`, `git foo`, etc.
-        if let cmd = parsed.commandWord,
-            Self.fileTakingCommands.contains(cmd)
-        {
-            return true
+        if let cmd = parsed.commandWord {
+            if Self.fileTakingCommands.contains(cmd) { return true }
+            if Self.sshHostCommands.contains(cmd) { return true }
         }
         return false
     }
@@ -206,9 +214,9 @@ final class CompletionEngine {
     // MARK: - Candidates
 
     private func candidates(parsed: Parsed, pwd: String) -> [Completion] {
-        // If the word looks like a path (contains a slash, starts
-        // with `~`, or starts with `.`), do filesystem completion
-        // regardless of position.
+        // Path-like words always go to the filesystem regardless of
+        // command (e.g. `ssh user@host:./file<Tab>` should still
+        // expand the file portion).
         let word = parsed.currentWord
         if word.contains("/") || word.hasPrefix("~") || word.hasPrefix(".") {
             return filesystemCandidates(
@@ -221,8 +229,14 @@ final class CompletionEngine {
             return executableCandidates(prefix: word)
         }
 
-        // Otherwise: filesystem completion in pwd (most common
-        // argument shape — a file in the current directory).
+        // Per-command argument completers.
+        if let cmd = parsed.commandWord {
+            if Self.sshHostCommands.contains(cmd) {
+                return sshHostCandidates(prefix: word)
+            }
+        }
+
+        // Default: filesystem in pwd.
         return filesystemCandidates(
             word: word,
             pwd: pwd,
@@ -299,6 +313,120 @@ final class CompletionEngine {
             results.append(.init(text: name, kind: .executable))
         }
         return results
+    }
+
+    // MARK: - SSH host source
+
+    private func sshHostCandidates(prefix: String) -> [Completion] {
+        refreshSshHostCacheIfNeeded()
+        return sshHostCache
+            .filter { $0.lowercased().hasPrefix(prefix.lowercased()) }
+            .sorted(by: { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
+            .map { .init(text: $0, kind: .executable) }
+    }
+
+    private func refreshSshHostCacheIfNeeded() {
+        let now = Date()
+        if now.timeIntervalSince(sshHostCacheBuiltAt) < cacheTTL { return }
+        sshHostCache = parseSshHosts()
+        sshHostCacheBuiltAt = now
+    }
+
+    /// Parse `~/.ssh/config` and any files it `Include`s, returning
+    /// the deduped set of literal Host names. Wildcards (`*`, `?`)
+    /// and negations (`!host`) are skipped — they're patterns, not
+    /// hosts the user can connect to.
+    private func parseSshHosts() -> [String] {
+        let configPath = ("~/.ssh/config" as NSString).expandingTildeInPath
+        var seen = Set<String>()
+        var results: [String] = []
+        var visited = Set<String>()
+
+        var queue: [String] = [configPath]
+        while let path = queue.popLast() {
+            if visited.contains(path) { continue }
+            visited.insert(path)
+            guard let contents = try? String(contentsOfFile: path, encoding: .utf8)
+            else { continue }
+
+            for rawLine in contents.split(separator: "\n", omittingEmptySubsequences: false) {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty || line.hasPrefix("#") { continue }
+
+                // Match the keyword (case-insensitive) at the start.
+                let parts = line.split(
+                    maxSplits: 1,
+                    omittingEmptySubsequences: true,
+                    whereSeparator: { $0.isWhitespace || $0 == "=" })
+                guard parts.count == 2 else { continue }
+                let keyword = String(parts[0]).lowercased()
+                let value = String(parts[1])
+
+                if keyword == "host" {
+                    for token in value.split(whereSeparator: { $0.isWhitespace }) {
+                        let host = String(token)
+                        if host.contains("*") || host.contains("?") { continue }
+                        if host.hasPrefix("!") { continue }
+                        if seen.insert(host).inserted {
+                            results.append(host)
+                        }
+                    }
+                } else if keyword == "include" {
+                    for token in value.split(whereSeparator: { $0.isWhitespace }) {
+                        let raw = String(token)
+                        let expanded = (raw as NSString).expandingTildeInPath
+                        let resolved: String
+                        if expanded.hasPrefix("/") {
+                            resolved = expanded
+                        } else {
+                            // Relative includes are resolved against ~/.ssh
+                            resolved = (("~/.ssh" as NSString)
+                                .expandingTildeInPath as NSString)
+                                .appendingPathComponent(expanded)
+                        }
+                        // Glob expansion (single * suffix only — covers
+                        // the common `Include conf.d/*` shape).
+                        for matched in expandGlob(resolved) {
+                            queue.append(matched)
+                        }
+                    }
+                }
+            }
+        }
+
+        return results
+    }
+
+    /// Minimal glob expansion: handles a single trailing `*` or `?`
+    /// in the basename. For anything more complex we'd want libc's
+    /// glob(3); not worth pulling in for ssh config Include patterns.
+    private func expandGlob(_ pattern: String) -> [String] {
+        if !pattern.contains("*") && !pattern.contains("?") {
+            return [pattern]
+        }
+        let dir = (pattern as NSString).deletingLastPathComponent
+        let base = (pattern as NSString).lastPathComponent
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir)
+        else { return [] }
+        return entries
+            .filter { matchesGlob($0, pattern: base) }
+            .map { (dir as NSString).appendingPathComponent($0) }
+    }
+
+    private func matchesGlob(_ name: String, pattern: String) -> Bool {
+        // Convert glob to regex: * → .*, ? → .
+        var regex = "^"
+        for ch in pattern {
+            switch ch {
+            case "*": regex += ".*"
+            case "?": regex += "."
+            case ".", "+", "(", ")", "[", "]", "{", "}", "|", "^", "$", "\\":
+                regex += "\\\(ch)"
+            default: regex.append(ch)
+            }
+        }
+        regex += "$"
+        return name.range(of: regex, options: .regularExpression) != nil
     }
 
     private func refreshExecutableCacheIfNeeded() {
