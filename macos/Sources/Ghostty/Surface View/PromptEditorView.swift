@@ -26,10 +26,10 @@ extension Ghostty {
         private var ghostQueryWorkItem: DispatchWorkItem?
 
         /// Popover for the multi-match completion list (Tab when
-        /// there are 2+ candidates).
-        private let completionPopover = NSPopover()
+        /// there are 2+ candidates). Custom borderless panel — see
+        /// CompletionPopoverController for why we don't use NSPopover.
         private let completionPopoverController = CompletionPopoverController()
-        private var popoverIsShown: Bool { completionPopover.isShown }
+        private var popoverIsShown: Bool { completionPopoverController.isVisible }
 
         /// Shell history (zsh / bash). Loaded once at init.
         private var history: [String] = []
@@ -424,7 +424,7 @@ extension Ghostty {
             // Esc.
             if event.keyCode == 53 {
                 if popoverIsShown {
-                    completionPopover.close()
+                    completionPopoverController.hide()
                     return true
                 }
                 if textView.hasGhost {
@@ -493,38 +493,23 @@ extension Ghostty {
         private func showCompletionPopover(matches: [CompletionEngine.Completion]) {
             completionPopoverController.completions = matches
             completionPopoverController.selectedIndex = 0
-            // Set size + reload BEFORE show so the popover sizes
-            // correctly on first appearance (NSPopover snapshots
-            // preferredContentSize at show time).
             completionPopoverController.reload()
-            if !popoverIsShown {
-                completionPopover.contentViewController = completionPopoverController
-                completionPopover.behavior = .transient
-                completionPopover.animates = false
-                let anchorRect = popoverAnchorRect()
-                // .maxX → popover flies out to the RIGHT of the
-                // cursor, like an inline contextual menu. AppKit will
-                // auto-flip to the left if there's no room on the
-                // right.
-                completionPopover.show(
-                    relativeTo: anchorRect,
-                    of: textView,
-                    preferredEdge: .maxX)
-            }
+            let anchorScreen = popoverAnchorScreenRect()
+            completionPopoverController.show(
+                at: anchorScreen,
+                parentWindow: textView.window)
         }
 
-        private func popoverAnchorRect() -> NSRect {
-            // Monospace text: column = char index since the line
-            // start. Walk the user-typed string back from the cursor
-            // to count the column and row. This sidesteps
-            // layoutManager.boundingRect's zero-rect-at-end-of-text
-            // edge case and gives a reliable anchor.
-            let cursor = textView.selectedRange().location
-            let inset = textView.textContainerInset
+        /// Cursor's screen rect (y-up). The popover's `show(at:)`
+        /// expects screen coords because the popover is a separate
+        /// borderless panel, not a positioning-view-relative NSPopover.
+        private func popoverAnchorScreenRect() -> NSRect {
             let cellW = owner?.cellSize.width ?? 8
             let cellH = owner?.cellSize.height ?? 17
+            let inset = textView.textContainerInset
 
-            // userTextLength excludes any inline ghost.
+            // Monospace: column count == char index since line start.
+            let cursor = textView.selectedRange().location
             let userLen = textView.userTextLength()
             let safeCursor = min(cursor, userLen)
             let chars = Array(textView.string.prefix(safeCursor))
@@ -539,9 +524,19 @@ extension Ghostty {
                 }
             }
 
-            let x = inset.width + CGFloat(col) * cellW
-            let y = inset.height + CGFloat(row) * cellH
-            return NSRect(x: x, y: y, width: max(1, cellW), height: cellH)
+            // textView is flipped (y-down). Cursor in textView local:
+            //   x = inset.left + col * cellW
+            //   y = inset.top  + row * cellH   (top of the row)
+            let localX = inset.width + CGFloat(col) * cellW
+            let localY = inset.height + CGFloat(row) * cellH
+            let localRect = NSRect(
+                x: localX, y: localY,
+                width: max(1, cellW), height: max(1, cellH))
+
+            // textView → window → screen.
+            let windowRect = textView.convert(localRect, to: nil)
+            guard let window = textView.window else { return windowRect }
+            return window.convertToScreen(windowRect)
         }
 
         /// Re-query and update / dismiss the popover after the user
@@ -554,12 +549,12 @@ extension Ghostty {
             let matches = completionEngine.allTabMatches(
                 line: line, cursor: cursor, pwd: pwd)
             if matches.isEmpty {
-                completionPopover.close()
+                completionPopoverController.hide()
                 return
             }
             if matches.count == 1 {
                 // Drop to ghost mode for a single match.
-                completionPopover.close()
+                completionPopoverController.hide()
                 let partial = completionEngine.currentWord(
                     line: line, cursor: cursor)
                 let suffix = matches[0].suffix(after: partial)
@@ -574,7 +569,7 @@ extension Ghostty {
             guard let selected = completionPopoverController.currentSelection()
             else { return true }
             insertCompletion(selected)
-            completionPopover.close()
+            completionPopoverController.hide()
             return true
         }
 
