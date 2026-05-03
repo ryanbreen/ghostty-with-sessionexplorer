@@ -25,6 +25,21 @@ extension Ghostty {
         /// Debounced work item that recomputes the inline ghost.
         private var ghostQueryWorkItem: DispatchWorkItem?
 
+        /// Popover for the multi-match completion list (Tab when
+        /// there are 2+ candidates).
+        private let completionPopover = NSPopover()
+        private let completionPopoverController = CompletionPopoverController()
+        private var popoverIsShown: Bool { completionPopover.isShown }
+
+        /// Shell history (zsh / bash). Loaded once at init.
+        private var history: [String] = []
+        /// Current index when scrolling history with Up/Down. nil
+        /// means "not navigating" (Up will start a new nav session).
+        private var historyIndex: Int?
+        /// Snapshot of what the user had typed when they started
+        /// navigating, so Down past the end restores it.
+        private var historyTypedSnapshot: String?
+
         /// Minimum input rows so the editor never collapses below
         /// usable. Total floor for the editor is 1 header + this =
         /// 3 rows.
@@ -71,10 +86,16 @@ extension Ghostty {
             textView.contentDidChangeHandler = { [weak self] in
                 self?.syncHeightToContent()
                 self?.scheduleGhostUpdate()
+                self?.refilterPopoverIfShown()
+                // Any user-driven text change exits history nav mode.
+                self?.historyIndex = nil
+                self?.historyTypedSnapshot = nil
             }
             textView.preKeyHandler = { [weak self] event in
                 self?.handlePreKey(event) ?? false
             }
+
+            loadHistory()
 
             pwdCancellable = owner.$pwd.sink { [weak self] _ in
                 DispatchQueue.main.async { self?.refreshHeaderText() }
@@ -353,52 +374,261 @@ extension Ghostty {
             }
         }
 
-        /// Pre-key hook: lets the editor view consume Tab / → / Esc
-        /// for completion handling before the textView's normal
-        /// keyDown processing. Returns true if the event was consumed.
+        /// Pre-key hook: lets the editor view consume Tab / → / ↑ / ↓
+        /// / Esc for completion + history handling before the
+        /// textView's normal keyDown processing. Returns true if the
+        /// event was consumed.
         private func handlePreKey(_ event: NSEvent) -> Bool {
-            // Tab → standard shell-style completion. Accept the ghost
-            // if one's showing; otherwise ask the engine for the
-            // longest-common-prefix suffix and insert that. ALWAYS
-            // consume the event so a literal tab character doesn't
-            // get inserted when there's nothing to complete.
-            if event.keyCode == 48 {  // Tab
-                if textView.acceptGhost() {
-                    syncHeightToContent()
+            // Up arrow.
+            if event.keyCode == 126 {
+                if popoverIsShown {
+                    completionPopoverController.selectPrevious()
                     return true
                 }
-                let line = textView.string
-                let cursor = textView.selectedRange().location
-                let pwd = owner?.pwd
-                    ?? FileManager.default.currentDirectoryPath
-                let suffix = completionEngine.tabComplete(
-                    line: line, cursor: cursor, pwd: pwd)
-                if !suffix.isEmpty {
-                    textView.insertText(
-                        suffix, replacementRange: NSRange(location: cursor, length: 0))
-                    syncHeightToContent()
-                    // After inserting, schedule a fresh ghost (in
-                    // case there are further matches under the new
-                    // prefix).
-                    scheduleGhostUpdate()
-                }
-                return true
+                if handleHistoryUp() { return true }
             }
-            // Right arrow → accept next word of ghost (Fish-style).
-            if event.keyCode == 124 {  // Right arrow
+            // Down arrow.
+            if event.keyCode == 125 {
+                if popoverIsShown {
+                    completionPopoverController.selectNext()
+                    return true
+                }
+                if handleHistoryDown() { return true }
+            }
+            // Tab.
+            if event.keyCode == 48 {
+                return handleTab()
+            }
+            // Right arrow.
+            if event.keyCode == 124 {
+                if popoverIsShown {
+                    return acceptPopoverSelectionAsWord()
+                }
                 if textView.acceptGhostWord() {
                     syncHeightToContent()
                     return true
                 }
             }
-            // Esc → dismiss ghost.
-            if event.keyCode == 53 {  // Escape
+            // Esc.
+            if event.keyCode == 53 {
+                if popoverIsShown {
+                    completionPopover.close()
+                    return true
+                }
                 if textView.hasGhost {
                     textView.setGhost(nil)
                     return true
                 }
             }
             return false
+        }
+
+        // MARK: - Tab + popover
+
+        private func handleTab() -> Bool {
+            // If the popover is already showing, Tab accepts the
+            // highlighted entry (full word).
+            if popoverIsShown {
+                return acceptPopoverSelectionFully()
+            }
+            // If a ghost is showing, Tab accepts it.
+            if textView.acceptGhost() {
+                syncHeightToContent()
+                return true
+            }
+            // Otherwise: query the engine. Single match → insert
+            // suffix. Multiple matches → open popover.
+            let line = textView.string
+            let cursor = textView.selectedRange().location
+            let pwd = owner?.pwd ?? FileManager.default.currentDirectoryPath
+            let matches = completionEngine.allTabMatches(
+                line: line, cursor: cursor, pwd: pwd)
+            if matches.isEmpty { return true }
+            if matches.count == 1 {
+                let suffix = matches[0].suffix(
+                    after: completionEngine.currentWord(line: line, cursor: cursor))
+                if !suffix.isEmpty {
+                    textView.insertText(
+                        suffix,
+                        replacementRange: NSRange(location: cursor, length: 0))
+                    syncHeightToContent()
+                    scheduleGhostUpdate()
+                }
+                return true
+            }
+            showCompletionPopover(matches: matches)
+            return true
+        }
+
+        private func showCompletionPopover(matches: [CompletionEngine.Completion]) {
+            completionPopoverController.completions = matches
+            completionPopoverController.selectedIndex = 0
+            if !popoverIsShown {
+                completionPopover.contentViewController = completionPopoverController
+                completionPopover.behavior = .transient
+                completionPopover.animates = false
+                let anchorRect = popoverAnchorRect()
+                completionPopover.show(
+                    relativeTo: anchorRect,
+                    of: textView,
+                    preferredEdge: .maxY)
+            }
+            completionPopoverController.reload()
+        }
+
+        private func popoverAnchorRect() -> NSRect {
+            let cursor = textView.selectedRange().location
+            let glyphRange = NSRange(location: cursor, length: 0)
+            let textRect = textView.firstRect(
+                forCharacterRange: glyphRange, actualRange: nil)
+            // textRect is in screen coords. Convert to textView local.
+            guard let window = textView.window else {
+                return NSRect(x: 0, y: 0, width: 1, height: 1)
+            }
+            let windowRect = window.convertFromScreen(textRect)
+            return textView.convert(windowRect, from: nil)
+        }
+
+        /// Re-query and update / dismiss the popover after the user
+        /// types more characters while the popover is showing.
+        private func refilterPopoverIfShown() {
+            guard popoverIsShown else { return }
+            let line = textView.string
+            let cursor = textView.selectedRange().location
+            let pwd = owner?.pwd ?? FileManager.default.currentDirectoryPath
+            let matches = completionEngine.allTabMatches(
+                line: line, cursor: cursor, pwd: pwd)
+            if matches.isEmpty {
+                completionPopover.close()
+                return
+            }
+            if matches.count == 1 {
+                // Drop to ghost mode for a single match.
+                completionPopover.close()
+                let partial = completionEngine.currentWord(
+                    line: line, cursor: cursor)
+                let suffix = matches[0].suffix(after: partial)
+                textView.setGhost(suffix.isEmpty ? nil : suffix)
+                return
+            }
+            completionPopoverController.completions = matches
+            completionPopoverController.reload()
+        }
+
+        private func acceptPopoverSelectionFully() -> Bool {
+            guard let selected = completionPopoverController.currentSelection()
+            else { return true }
+            insertCompletion(selected)
+            completionPopover.close()
+            return true
+        }
+
+        private func acceptPopoverSelectionAsWord() -> Bool {
+            // For now, "as word" = same as fully (most candidates are
+            // single words). When we add multi-word completions in a
+            // later phase we'll diff at word boundaries.
+            return acceptPopoverSelectionFully()
+        }
+
+        private func insertCompletion(_ comp: CompletionEngine.Completion) {
+            let line = textView.string
+            let cursor = textView.selectedRange().location
+            let partial = completionEngine.currentWord(
+                line: line, cursor: cursor)
+            let suffix = comp.suffix(after: partial)
+            if suffix.isEmpty { return }
+            textView.insertText(
+                suffix, replacementRange: NSRange(location: cursor, length: 0))
+            syncHeightToContent()
+            scheduleGhostUpdate()
+        }
+
+        // MARK: - History (Up / Down arrow)
+
+        /// Read the user's shell history once. zsh format has a
+        /// timestamp prefix `: 1234567890:0;cmd`; bash is plain
+        /// command-per-line. We try zsh first, fall back to bash.
+        private func loadHistory() {
+            let zshPath = ("~/.zsh_history" as NSString).expandingTildeInPath
+            if let raw = try? String(
+                contentsOfFile: zshPath, encoding: .utf8)
+            {
+                history = parseZshHistory(raw)
+                return
+            }
+            // Some setups use ISO-Latin-1; try that as fallback.
+            if let raw = try? String(
+                contentsOfFile: zshPath, encoding: .isoLatin1)
+            {
+                history = parseZshHistory(raw)
+                return
+            }
+            let bashPath = ("~/.bash_history" as NSString).expandingTildeInPath
+            if let raw = try? String(
+                contentsOfFile: bashPath, encoding: .utf8)
+            {
+                history = raw
+                    .split(separator: "\n")
+                    .map(String.init)
+                    .filter { !$0.isEmpty }
+            }
+        }
+
+        private func parseZshHistory(_ raw: String) -> [String] {
+            return raw
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .compactMap { line -> String? in
+                    if line.hasPrefix(":") {
+                        if let semi = line.range(of: ";") {
+                            return String(line[semi.upperBound...])
+                        }
+                    }
+                    let s = String(line)
+                    return s.isEmpty ? nil : s
+                }
+        }
+
+        private func handleHistoryUp() -> Bool {
+            guard !history.isEmpty else { return false }
+            // Start nav: snapshot what the user typed so Down past
+            // the end can restore it.
+            if historyIndex == nil {
+                historyTypedSnapshot = textView.string
+                historyIndex = history.count
+            }
+            guard let idx = historyIndex, idx > 0 else { return true }
+            historyIndex = idx - 1
+            replaceTextViewContents(history[idx - 1])
+            return true
+        }
+
+        private func handleHistoryDown() -> Bool {
+            guard let idx = historyIndex else { return false }
+            let next = idx + 1
+            if next >= history.count {
+                historyIndex = nil
+                replaceTextViewContents(historyTypedSnapshot ?? "")
+                historyTypedSnapshot = nil
+            } else {
+                historyIndex = next
+                replaceTextViewContents(history[next])
+            }
+            return true
+        }
+
+        private func replaceTextViewContents(_ s: String) {
+            // Drop any ghost first, then replace.
+            textView.setGhost(nil)
+            textView.string = s
+            textView.setSelectedRange(
+                NSRange(location: (s as NSString).length, length: 0))
+            // didChangeText isn't fired by setting `.string`, so we
+            // call our flow manually but keep the history-nav state
+            // (we suppress the "exit history" reset here).
+            syncHeightToContent()
+            // Defer re-arming the ghost — usually we don't want a
+            // ghost while the user is browsing history.
+            ghostQueryWorkItem?.cancel()
         }
 
         func commit() {

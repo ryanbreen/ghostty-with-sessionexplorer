@@ -172,6 +172,21 @@ final class CompletionEngine {
         return String(lcp.dropFirst(parsed.currentWord.count))
     }
 
+    /// All ranked completion candidates for the current cursor
+    /// position. Used by the popover (when the user invokes Tab and
+    /// there are 2+ matches, we surface the whole list to navigate).
+    func allTabMatches(line: String, cursor: Int, pwd: String) -> [Completion] {
+        let parsed = parse(line: line, cursor: cursor)
+        return rankedMatches(parsed: parsed, pwd: pwd)
+    }
+
+    /// What the cursor's current word is — used by the popover-driven
+    /// "accept the highlighted item" flow to compute the suffix to
+    /// insert.
+    func currentWord(line: String, cursor: Int) -> String {
+        return parse(line: line, cursor: cursor).currentWord
+    }
+
     private func rankedMatches(parsed: Parsed, pwd: String) -> [Completion] {
         return candidates(parsed: parsed, pwd: pwd)
             .filter { $0.text.hasPrefix(parsed.currentWord) && $0.text != parsed.currentWord }
