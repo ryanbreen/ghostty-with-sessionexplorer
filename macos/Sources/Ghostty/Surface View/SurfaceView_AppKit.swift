@@ -1641,6 +1641,21 @@ extension Ghostty {
                 copyOutputItem.representedObject = NSNumber(value: viewportRow)
             }
 
+            // "Open in Finder" — opens the surface's current working
+            // directory in Finder. (MVP: uses the LIVE pwd, which
+            // matches the most recent prompt. If the user has cd'd
+            // since the right-clicked command ran, this opens the new
+            // pwd, not the historical one. We can plumb per-command
+            // pwd later if needed.)
+            if let pwd = self.pwd, !pwd.isEmpty {
+                let openItem = menu.addItem(
+                    withTitle: "Open in Finder",
+                    action: #selector(openCommandPwdInFinder(_:)),
+                    keyEquivalent: "")
+                openItem.target = self
+                openItem.representedObject = URL(fileURLWithPath: pwd)
+            }
+
             menu.addItem(.separator())
             item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
@@ -1791,6 +1806,13 @@ extension Ghostty {
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
             }
+        }
+
+        /// Backing for the right-click "Open in Finder" menu item.
+        /// Opens the URL stored in `representedObject`.
+        @objc func openCommandPwdInFinder(_ sender: NSMenuItem) {
+            guard let url = sender.representedObject as? URL else { return }
+            NSWorkspace.shared.open(url)
         }
 
         /// Backing for the right-click "Copy Command Output" menu item.

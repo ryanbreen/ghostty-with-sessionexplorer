@@ -32,6 +32,13 @@ enabled: bool = false,
 /// `ghostty_surface_read_prompt`.
 cached_prompt: std.ArrayListUnmanaged(u8) = .empty,
 
+/// Cursor row recorded by `Surface.editorCommit` right before the
+/// command bytes are queued to the PTY. The stream handler reads this
+/// when OSC 133;C arrives and uses `deleteLines` to strip the kernel's
+/// echoed command line out of the visible grid — the apprt's block
+/// separator already shows the command, so the bare echo is redundant.
+commit_echo_start_row: ?u32 = null,
+
 /// Optional state-change callback. Invoked on every activate/deactivate
 /// transition. The apprt layer (e.g. macOS) uses this to show/hide the
 /// native CoreText prompt-editor view. The callback may fire on the
@@ -82,6 +89,19 @@ pub fn capturePrompt(self: *Editor, text: []const u8) Allocator.Error!void {
 /// no prompt has been captured yet.
 pub fn cachedPrompt(self: *const Editor) []const u8 {
     return self.cached_prompt.items;
+}
+
+/// Record the cursor row at the moment a commit is shipped to the PTY.
+pub fn markCommitStart(self: *Editor, row: u32) void {
+    self.commit_echo_start_row = row;
+}
+
+/// Take and clear the recorded commit start row. Returns null if no
+/// commit is in flight.
+pub fn takeCommitStart(self: *Editor) ?u32 {
+    const row = self.commit_echo_start_row;
+    self.commit_echo_start_row = null;
+    return row;
 }
 
 /// Returns true if the editor is currently active.

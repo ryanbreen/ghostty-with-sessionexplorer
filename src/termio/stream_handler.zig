@@ -1078,6 +1078,28 @@ pub const StreamHandler = struct {
         switch (cmd.action) {
             .end_input_start_output => {
                 self.surfaceMessageWriter(.start_command);
+
+                // If the apprt's prompt editor recorded a commit-start
+                // row, erase the kernel-echoed command line(s) between
+                // that row and the current cursor (where output is
+                // about to start). Runs synchronously with the parser,
+                // so it can't race with output bytes that come after
+                // OSC 133;C — they'll write into the freshly-deleted
+                // gap rather than into the echo row.
+                if (self.renderer_state.prompt_editor) |ed| {
+                    if (ed.takeCommitStart()) |start_row| {
+                        const cur_y = self.terminal.screens.active.cursor.y;
+                        if (cur_y > start_row) {
+                            const echo_rows = cur_y - start_row;
+                            const screen = self.terminal.screens.active;
+                            screen.cursorAbsolute(0, @intCast(start_row));
+                            self.terminal.deleteLines(echo_rows);
+                            // deleteLines's defer parks the cursor at
+                            // (left_margin, start_row), which is now
+                            // the row where output should land.
+                        }
+                    }
+                }
             },
 
             .end_command => {

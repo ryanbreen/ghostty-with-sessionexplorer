@@ -3547,6 +3547,17 @@ pub fn editorCommit(self: *Surface, text: []const u8) !void {
         return;
     }
 
+    // Record the cursor row right before we ship the bytes. The stream
+    // handler reads this when OSC 133;C arrives and uses `deleteLines`
+    // to strip the kernel's echo of the command — our block separator
+    // already shows the command, so the bare echo is redundant.
+    {
+        self.renderer_state.mutex.lock();
+        defer self.renderer_state.mutex.unlock();
+        const cur_y = self.io.terminal.screens.active.cursor.y;
+        self.editor.markCommitStart(@intCast(cur_y));
+    }
+
     const buf = try self.alloc.alloc(u8, text.len + 1);
     @memcpy(buf[0..text.len], text);
     buf[text.len] = '\r';

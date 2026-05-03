@@ -320,10 +320,6 @@ extension Ghostty {
             command: String,
             owner: SurfaceView
         ) -> String {
-            // Use the AUTHORITATIVE column count from libghostty (not
-            // bounds.width / cellSize.width, which doesn't subtract
-            // horizontal padding and produces a too-wide line that
-            // wraps onto a second row).
             let geom = currentGeometry()
             let cols = max(20, Int(geom.cols))
 
@@ -331,30 +327,36 @@ extension Ghostty {
             formatter.dateFormat = "HH:mm"
             let stamp = formatter.string(from: Date())
 
-            // Trim long commands + collapse newlines to keep the
-            // separator a single visual row.
-            let oneLine = command
+            // The label inside the separator is the captured shell
+            // prompt (e.g. "wrb@Mac ghostty %") + the typed command —
+            // exactly what a normal terminal entry looks like. Falls
+            // back to derived `user@host pwd %` when no prompt is
+            // cached yet.
+            let oneLineCmd = command
                 .replacingOccurrences(of: "\n", with: " ")
                 .trimmingCharacters(in: .whitespaces)
-            let cmd = String(oneLine.prefix(60))
+            let promptText = readShellPromptFromTerminal() ?? derivedPromptText()
+            let labelRaw = promptText.isEmpty
+                ? oneLineCmd
+                : "\(promptText) \(oneLineCmd)"
+            let label = String(labelRaw.prefix(160))
 
-            let prefix = "─── \(cmd) "
-            let suffix = " \(stamp) ───"
-            // -1 from cols to give the terminal one column of slack so
-            // a perfectly-cols-wide line doesn't trigger an
-            // implicit-wrap on some renderers.
+            // Heavier glyph (U+2501 ━) + bold + cyan = visible without
+            // shouting. Two cells of padding around the label so the
+            // text breathes inside the rule.
+            let prefix = "━━━  \(label)  "
+            let suffix = "  \(stamp) ━━━"
+            // -1 from cols to give one column of slack so a perfectly-
+            // cols-wide line doesn't trigger implicit wrap.
             let dashes = max(3, (cols - 1) - prefix.count - suffix.count)
-            let middle = String(repeating: "─", count: dashes)
+            let middle = String(repeating: "━", count: dashes)
             let body = prefix + middle + suffix
 
-            // Leading \r so we always start at column 0 — when commit
-            // fires the cursor is parked at the prompt's input column
-            // (e.g. col 12 after "wrb@Mac ~ % "), and without resetting
-            // X the separator starts mid-line and wraps onto a second
-            // row. Trailing \r\n moves to the next line for the shell's
-            // echo (inject_output bypasses the line discipline that
-            // would otherwise translate \n to \r\n).
-            return "\r\u{1B}[2;36m\(body)\u{1B}[0m\r\n"
+            // Leading \r → start at column 0 (cursor was parked at
+            // the editor's input column when commit fired).
+            // \x1b[1;36m → bold + cyan.
+            // Trailing \r\n → next line for the shell's echo.
+            return "\r\u{1B}[1;36m\(body)\u{1B}[0m\r\n"
         }
 
         func yieldFocusToTerminal() {
