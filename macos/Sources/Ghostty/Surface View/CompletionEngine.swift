@@ -388,12 +388,21 @@ final class CompletionEngine {
     }
 
     /// Split a partial path into the directory to search and the
-    /// prefix to match against entries in that directory.
+    /// prefix to match against entries in that directory. Relative
+    /// directory parts are resolved against the user's shell pwd —
+    /// not against the app process's CWD, which is wherever Ghostty
+    /// was launched and almost never matches what the user expects.
     private func splitPathPrefix(_ word: String, pwd: String) -> (String, String) {
         let expanded = expandTilde(word)
         if let slashRange = expanded.range(of: "/", options: .backwards) {
-            let dirPart = String(expanded[..<slashRange.upperBound])
+            var dirPart = String(expanded[..<slashRange.upperBound])
             let prefix = String(expanded[slashRange.upperBound...])
+            // Resolve relative paths (e.g. `agent-credentials/`) against
+            // the user's shell pwd. Absolute paths (`/Library/...`) and
+            // already-tilde-expanded paths are left alone.
+            if !dirPart.hasPrefix("/") {
+                dirPart = (pwd as NSString).appendingPathComponent(dirPart)
+            }
             let searchDir = (dirPart as NSString).standardizingPath
             return (searchDir.isEmpty ? "/" : searchDir, prefix)
         }
