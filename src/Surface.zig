@@ -3481,15 +3481,20 @@ pub fn commandOutputAt(
 }
 
 /// Geometry the apprt's native editor view needs to size itself
-/// correctly. `avail_rows` is the number of cell rows from the shell's
-/// cursor row down to the bottom of the viewport — this is the
-/// "natural" space below the prompt where the editor wants to live.
-/// `bottom_padding_px` is the renderer's bottom inset in pixels (the
-/// editor view extends down through this so there's no visible gap
-/// between it and the window's bottom edge).
+/// correctly.
+///   `avail_rows`        rows from the shell's cursor row down to the
+///                       viewport bottom (the "natural" space below
+///                       the prompt where the editor wants to live).
+///   `bottom_padding_px` renderer's bottom inset in pixels (the editor
+///                       extends down through this for a clean window
+///                       edge).
+///   `cols`              terminal column count. Apprt uses this to
+///                       size things like the per-command block
+///                       separator so it fits in exactly one row.
 pub const EditorGeometry = struct {
     avail_rows: u32,
     bottom_padding_px: u32,
+    cols: u32,
 };
 
 pub fn editorGeometry(self: *Surface) EditorGeometry {
@@ -3497,11 +3502,13 @@ pub fn editorGeometry(self: *Surface) EditorGeometry {
     defer self.renderer_state.mutex.unlock();
     const screen = self.io.terminal.screens.active;
     const trows: u32 = @intCast(screen.pages.rows);
+    const tcols: u32 = @intCast(screen.pages.cols);
     const cur_y: u32 = @intCast(screen.cursor.y);
     const avail: u32 = if (trows > cur_y) trows - cur_y else 1;
     return .{
         .avail_rows = avail,
         .bottom_padding_px = self.size.padding.bottom,
+        .cols = tcols,
     };
 }
 

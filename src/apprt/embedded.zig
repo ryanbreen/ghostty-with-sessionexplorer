@@ -2033,6 +2033,7 @@ pub const CAPI = struct {
     pub const EditorGeometry = extern struct {
         avail_rows: u32,
         bottom_padding_px: u32,
+        cols: u32,
     };
 
     export fn ghostty_surface_editor_geometry(
@@ -2042,6 +2043,7 @@ pub const CAPI = struct {
         return .{
             .avail_rows = g.avail_rows,
             .bottom_padding_px = g.bottom_padding_px,
+            .cols = g.cols,
         };
     }
 

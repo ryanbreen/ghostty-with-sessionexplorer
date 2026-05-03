@@ -1369,6 +1369,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         screen.cursorAbsolute(cur_x, @intCast(editor_top));
                     }
                     if (just_activated and trows > editor_top) {
+                        // protected=true clears cell content but
+                        // preserves row-level metadata, including
+                        // `semantic_prompt`. We need that marker to
+                        // stay on the prompt row so the right-click
+                        // "Copy Command Output" walk-up can find the
+                        // prompt that started each command.
                         screen.clearRows(
                             .{ .active = .{
                                 .x = 0,
@@ -1378,7 +1384,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                                 .x = 0,
                                 .y = @intCast(trows - 1),
                             } },
-                            false,
+                            true,
                         );
                     }
                 }

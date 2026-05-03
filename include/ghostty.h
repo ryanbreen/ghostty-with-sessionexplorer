@@ -1217,6 +1217,7 @@ GHOSTTY_API bool ghostty_surface_command_output_at(ghostty_surface_t,
 typedef struct {
   uint32_t avail_rows;
   uint32_t bottom_padding_px;
+  uint32_t cols;
 } ghostty_editor_geometry_s;
 GHOSTTY_API ghostty_editor_geometry_s
 ghostty_surface_editor_geometry(ghostty_surface_t);

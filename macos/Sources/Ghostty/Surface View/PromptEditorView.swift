@@ -210,7 +210,11 @@ extension Ghostty {
 
         private func currentGeometry() -> ghostty_editor_geometry_s {
             guard let cSurface = owner?.surface else {
-                return ghostty_editor_geometry_s(avail_rows: 3, bottom_padding_px: 0)
+                return ghostty_editor_geometry_s(
+                    avail_rows: 3,
+                    bottom_padding_px: 0,
+                    cols: 80
+                )
             }
             return ghostty_surface_editor_geometry(cSurface)
         }
@@ -316,8 +320,12 @@ extension Ghostty {
             command: String,
             owner: SurfaceView
         ) -> String {
-            let cellW = max(1, owner.cellSize.width)
-            let approxCols = max(40, Int(floor(owner.bounds.width / cellW)))
+            // Use the AUTHORITATIVE column count from libghostty (not
+            // bounds.width / cellSize.width, which doesn't subtract
+            // horizontal padding and produces a too-wide line that
+            // wraps onto a second row).
+            let geom = currentGeometry()
+            let cols = max(20, Int(geom.cols))
 
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm"
@@ -332,12 +340,15 @@ extension Ghostty {
 
             let prefix = "─── \(cmd) "
             let suffix = " \(stamp) ───"
-            let dashes = max(3, approxCols - prefix.count - suffix.count)
+            // -1 from cols to give the terminal one column of slack so
+            // a perfectly-cols-wide line doesn't trigger an
+            // implicit-wrap on some renderers.
+            let dashes = max(3, (cols - 1) - prefix.count - suffix.count)
             let middle = String(repeating: "─", count: dashes)
             let body = prefix + middle + suffix
 
-            // Dim + cyan; reset; LF (terminal does CR via line discipline
-            // but inject_output bypasses that, so we send CR+LF explicitly).
+            // Dim + cyan; reset; CR+LF (inject_output bypasses the
+            // line discipline that would translate \n to \r\n).
             return "\u{1B}[2;36m\(body)\u{1B}[0m\r\n"
         }
 
