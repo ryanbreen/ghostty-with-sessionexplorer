@@ -11,10 +11,19 @@ final class CompletionPopoverController: NSViewController {
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
 
+    /// Compact font matching what an autocomplete dropdown should
+    /// look like — smaller than the editor itself so it reads as
+    /// "metadata about the input" rather than another input field.
+    private static let rowFont = NSFont.monospacedSystemFont(
+        ofSize: 11, weight: .regular)
+    private static let rowHeight: CGFloat = 16
+    private static let popoverWidth: CGFloat = 240
+    private static let visibleRowsMax: Int = 10
+
     override func loadView() {
         let column = NSTableColumn(
             identifier: NSUserInterfaceItemIdentifier("text"))
-        column.width = 280
+        column.width = Self.popoverWidth - 16
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
         tableView.headerView = nil
@@ -22,8 +31,8 @@ final class CompletionPopoverController: NSViewController {
         tableView.delegate = self
         tableView.allowsMultipleSelection = false
         tableView.allowsEmptySelection = false
-        tableView.intercellSpacing = NSSize(width: 0, height: 2)
-        tableView.rowHeight = 20
+        tableView.intercellSpacing = NSSize(width: 0, height: 0)
+        tableView.rowHeight = Self.rowHeight
         tableView.style = .plain
         tableView.selectionHighlightStyle = .regular
         tableView.backgroundColor = .clear
@@ -35,7 +44,8 @@ final class CompletionPopoverController: NSViewController {
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let container = NSView(
+            frame: NSRect(x: 0, y: 0, width: Self.popoverWidth, height: 100))
         scrollView.frame = container.bounds
         scrollView.autoresizingMask = [.width, .height]
         container.addSubview(scrollView)
@@ -77,12 +87,11 @@ final class CompletionPopoverController: NSViewController {
     }
 
     private func sizePopoverToContent() {
-        // Cap height at ~12 rows; let width breathe a bit for long
-        // path completions.
-        let rowsToShow = min(completions.count, 12)
-        let height = max(60, CGFloat(rowsToShow) * 22 + 8)
-        let width: CGFloat = 320
-        preferredContentSize = NSSize(width: width, height: height)
+        let rowsToShow = max(1, min(completions.count, Self.visibleRowsMax))
+        let height = CGFloat(rowsToShow) * Self.rowHeight + 8
+        preferredContentSize = NSSize(
+            width: Self.popoverWidth,
+            height: height)
     }
 }
 
@@ -101,13 +110,11 @@ extension CompletionPopoverController: NSTableViewDelegate {
         guard row < completions.count else { return nil }
         let comp = completions[row]
         let label = NSTextField(labelWithString: comp.text)
-        label.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        label.font = Self.rowFont
         label.lineBreakMode = .byTruncatingTail
         label.usesSingleLineMode = true
         label.isBordered = false
         label.drawsBackground = false
-        // Tag dirs with a trailing slash visually, kind icons could
-        // come later (folder, gear for executable, etc.).
         return label
     }
 

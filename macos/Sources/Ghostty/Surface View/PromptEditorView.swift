@@ -493,6 +493,10 @@ extension Ghostty {
         private func showCompletionPopover(matches: [CompletionEngine.Completion]) {
             completionPopoverController.completions = matches
             completionPopoverController.selectedIndex = 0
+            // Set size + reload BEFORE show so the popover sizes
+            // correctly on first appearance (NSPopover snapshots
+            // preferredContentSize at show time).
+            completionPopoverController.reload()
             if !popoverIsShown {
                 completionPopover.contentViewController = completionPopoverController
                 completionPopover.behavior = .transient
@@ -507,46 +511,36 @@ extension Ghostty {
                     of: textView,
                     preferredEdge: .maxX)
             }
-            completionPopoverController.reload()
         }
 
         private func popoverAnchorRect() -> NSRect {
-            // Anchor at the cursor's pixel position. Use the layout
-            // manager (gives correct positions through wraps and
-            // multi-line content), and fall back to a monospaced
-            // estimate if the layout manager isn't ready.
+            // Monospace text: column = char index since the line
+            // start. Walk the user-typed string back from the cursor
+            // to count the column and row. This sidesteps
+            // layoutManager.boundingRect's zero-rect-at-end-of-text
+            // edge case and gives a reliable anchor.
             let cursor = textView.selectedRange().location
             let inset = textView.textContainerInset
-            let cellH = owner?.cellSize.height ?? 17
             let cellW = owner?.cellSize.width ?? 8
+            let cellH = owner?.cellSize.height ?? 17
 
-            if let layoutManager = textView.layoutManager,
-                let textContainer = textView.textContainer
-            {
-                layoutManager.ensureLayout(for: textContainer)
-                let glyphIndex = layoutManager.glyphIndexForCharacter(at: cursor)
-                var rect = layoutManager.boundingRect(
-                    forGlyphRange: NSRange(location: glyphIndex, length: 1),
-                    in: textContainer)
-                if rect.size.width == 0 || rect.size.height == 0 {
-                    // Fallback: bounding rect of the line fragment.
-                    rect = layoutManager.lineFragmentUsedRect(
-                        forGlyphAt: glyphIndex, effectiveRange: nil)
+            // userTextLength excludes any inline ghost.
+            let userLen = textView.userTextLength()
+            let safeCursor = min(cursor, userLen)
+            let chars = Array(textView.string.prefix(safeCursor))
+            var col = 0
+            var row = 0
+            for ch in chars {
+                if ch == "\n" {
+                    row += 1
+                    col = 0
+                } else {
+                    col += 1
                 }
-                // Translate from textContainer coords to view coords.
-                rect.origin.x += inset.width
-                rect.origin.y += inset.height
-                if rect.width == 0 { rect.size.width = max(1, cellW) }
-                if rect.height == 0 { rect.size.height = cellH }
-                // Flip Y if the textView is flipped — most NSTextViews
-                // ARE flipped (y-down) so this matches what AppKit
-                // expects for the positioningRect.
-                return rect
             }
 
-            // Fallback: estimate cursor X from character index.
-            let x = inset.width + CGFloat(cursor) * cellW
-            let y = inset.height
+            let x = inset.width + CGFloat(col) * cellW
+            let y = inset.height + CGFloat(row) * cellH
             return NSRect(x: x, y: y, width: max(1, cellW), height: cellH)
         }
 
