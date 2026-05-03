@@ -31,7 +31,10 @@ extension Ghostty {
         private let completionPopoverController = CompletionPopoverController()
         private var popoverIsShown: Bool { completionPopoverController.isVisible }
 
-        /// Shell history (zsh / bash). Loaded once at init.
+        /// Session-local history of committed commands. Appended on
+        /// each commit; never read from .zsh_history / .bash_history
+        /// per the user's preference for "Up arrow shows what I ran
+        /// in THIS terminal, nothing else".
         private var history: [String] = []
         /// Current index when scrolling history with Up/Down. nil
         /// means "not navigating" (Up will start a new nav session).
@@ -95,7 +98,6 @@ extension Ghostty {
                 self?.handlePreKey(event) ?? false
             }
 
-            loadHistory()
 
             pwdCancellable = owner.$pwd.sink { [weak self] _ in
                 DispatchQueue.main.async { self?.refreshHeaderText() }
@@ -613,47 +615,15 @@ extension Ghostty {
 
         // MARK: - History (Up / Down arrow)
 
-        /// Read the user's shell history once. zsh format has a
-        /// timestamp prefix `: 1234567890:0;cmd`; bash is plain
-        /// command-per-line. We try zsh first, fall back to bash.
-        private func loadHistory() {
-            let zshPath = ("~/.zsh_history" as NSString).expandingTildeInPath
-            if let raw = try? String(
-                contentsOfFile: zshPath, encoding: .utf8)
-            {
-                history = parseZshHistory(raw)
-                return
-            }
-            // Some setups use ISO-Latin-1; try that as fallback.
-            if let raw = try? String(
-                contentsOfFile: zshPath, encoding: .isoLatin1)
-            {
-                history = parseZshHistory(raw)
-                return
-            }
-            let bashPath = ("~/.bash_history" as NSString).expandingTildeInPath
-            if let raw = try? String(
-                contentsOfFile: bashPath, encoding: .utf8)
-            {
-                history = raw
-                    .split(separator: "\n")
-                    .map(String.init)
-                    .filter { !$0.isEmpty }
-            }
-        }
-
-        private func parseZshHistory(_ raw: String) -> [String] {
-            return raw
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .compactMap { line -> String? in
-                    if line.hasPrefix(":") {
-                        if let semi = line.range(of: ";") {
-                            return String(line[semi.upperBound...])
-                        }
-                    }
-                    let s = String(line)
-                    return s.isEmpty ? nil : s
-                }
+        /// Append a committed command to this session's history.
+        /// Skips empty commands and consecutive duplicates so
+        /// repeating the same command doesn't pollute the up-arrow
+        /// stream.
+        private func recordHistory(_ command: String) {
+            let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            if history.last == trimmed { return }
+            history.append(trimmed)
         }
 
         private func handleHistoryUp() -> Bool {
@@ -702,6 +672,7 @@ extension Ghostty {
         func commit() {
             guard let owner, let cSurface = owner.surface else { return }
             let payload = textView.string
+            recordHistory(payload)
 
             // Block separator: write a styled horizontal rule with the
             // command name + timestamp into the terminal cells before
