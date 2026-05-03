@@ -74,16 +74,54 @@ final class CompletionEngine {
     /// Commands that take only directory arguments.
     private static let directoryOnly: Set<String> = ["cd", "pushd", "rmdir"]
 
+    /// Commands known to take file/path arguments. The inline ghost
+    /// shows for these even when the typed word doesn't look path-like.
+    /// Other commands (ssh, kubectl, git, etc.) don't get ghost
+    /// suggestions for their arguments — Tab still works there, the
+    /// user just isn't pestered with random pwd-file suggestions.
+    private static let fileTakingCommands: Set<String> = [
+        "cat", "cd", "chmod", "chown", "code", "cp", "diff", "du",
+        "emacs", "file", "head", "less", "ln", "ls", "mkdir", "more",
+        "mv", "nano", "open", "popd", "pushd", "rm", "rmdir", "source",
+        "stat", "subl", "tail", "touch", "vi", "vim", "which", "zip",
+    ]
+
     // MARK: - Public API
 
     /// Returns the best inline completion candidate for the given
-    /// input, or nil if nothing matches.
+    /// input, or nil if nothing matches OR if the context isn't
+    /// confident enough to suggest. Conservative on purpose: we only
+    /// show a ghost for path-like words, command-position completion,
+    /// or when the command is a known file-taker. The user's Tab key
+    /// always works (via `tabComplete`), so being silent here is fine.
     func bestInlineCompletion(line: String, cursor: Int, pwd: String) -> Completion? {
         let parsed = parse(line: line, cursor: cursor)
-        let candidates = candidates(parsed: parsed, pwd: pwd)
-        // Phase 1: alphabetical sort (folders before files when both
-        // present), pick first that strictly extends the partial.
-        let sorted = candidates
+        guard shouldShowInlineGhost(parsed: parsed) else { return nil }
+        return rankedMatches(parsed: parsed, pwd: pwd).first
+    }
+
+    /// Compute completions for the user's Tab key press. Returns the
+    /// suffix to insert (longest common prefix of all matches, minus
+    /// the partial the user already typed). Empty string means "no
+    /// applicable completion". Always permissive — Tab works in any
+    /// context where there are matching files/executables.
+    func tabComplete(line: String, cursor: Int, pwd: String) -> String {
+        let parsed = parse(line: line, cursor: cursor)
+        let matches = rankedMatches(parsed: parsed, pwd: pwd)
+        guard !matches.isEmpty else { return "" }
+
+        if matches.count == 1 {
+            return matches[0].suffix(after: parsed.currentWord)
+        }
+
+        // Multiple matches: complete to the longest common prefix.
+        let lcp = longestCommonPrefix(matches.map(\.text))
+        guard lcp.count > parsed.currentWord.count else { return "" }
+        return String(lcp.dropFirst(parsed.currentWord.count))
+    }
+
+    private func rankedMatches(parsed: Parsed, pwd: String) -> [Completion] {
+        return candidates(parsed: parsed, pwd: pwd)
             .filter { $0.text.hasPrefix(parsed.currentWord) && $0.text != parsed.currentWord }
             .sorted { lhs, rhs in
                 if (lhs.kind == .directory) != (rhs.kind == .directory) {
@@ -91,7 +129,34 @@ final class CompletionEngine {
                 }
                 return lhs.text.localizedCaseInsensitiveCompare(rhs.text) == .orderedAscending
             }
-        return sorted.first
+    }
+
+    private func shouldShowInlineGhost(parsed: Parsed) -> Bool {
+        // Always show ghost for command-position completion.
+        if parsed.isCommandPosition { return true }
+        // Always show for path-like words (contain /, start with ~ or .).
+        let w = parsed.currentWord
+        if w.contains("/") || w.hasPrefix("~") || w.hasPrefix(".") { return true }
+        // Show for arguments only when the command is a known
+        // file-taker. Skips noisy ghosts for `ssh foo`, `git foo`, etc.
+        if let cmd = parsed.commandWord,
+            Self.fileTakingCommands.contains(cmd)
+        {
+            return true
+        }
+        return false
+    }
+
+    private func longestCommonPrefix(_ strings: [String]) -> String {
+        guard let first = strings.first else { return "" }
+        var prefix = first
+        for s in strings.dropFirst() {
+            while !s.hasPrefix(prefix) {
+                prefix = String(prefix.dropLast())
+                if prefix.isEmpty { return "" }
+            }
+        }
+        return prefix
     }
 
     // MARK: - Parsing

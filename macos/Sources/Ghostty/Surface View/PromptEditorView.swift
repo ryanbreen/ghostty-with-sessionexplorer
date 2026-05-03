@@ -354,17 +354,37 @@ extension Ghostty {
         }
 
         /// Pre-key hook: lets the editor view consume Tab / → / Esc
-        /// for completion ghost handling before the textView's normal
+        /// for completion handling before the textView's normal
         /// keyDown processing. Returns true if the event was consumed.
         private func handlePreKey(_ event: NSEvent) -> Bool {
-            // Tab → accept whole ghost.
+            // Tab → standard shell-style completion. Accept the ghost
+            // if one's showing; otherwise ask the engine for the
+            // longest-common-prefix suffix and insert that. ALWAYS
+            // consume the event so a literal tab character doesn't
+            // get inserted when there's nothing to complete.
             if event.keyCode == 48 {  // Tab
                 if textView.acceptGhost() {
                     syncHeightToContent()
                     return true
                 }
+                let line = textView.string
+                let cursor = textView.selectedRange().location
+                let pwd = owner?.pwd
+                    ?? FileManager.default.currentDirectoryPath
+                let suffix = completionEngine.tabComplete(
+                    line: line, cursor: cursor, pwd: pwd)
+                if !suffix.isEmpty {
+                    textView.insertText(
+                        suffix, replacementRange: NSRange(location: cursor, length: 0))
+                    syncHeightToContent()
+                    // After inserting, schedule a fresh ghost (in
+                    // case there are further matches under the new
+                    // prefix).
+                    scheduleGhostUpdate()
+                }
+                return true
             }
-            // Right arrow → accept next word of ghost.
+            // Right arrow → accept next word of ghost (Fish-style).
             if event.keyCode == 124 {  // Right arrow
                 if textView.acceptGhostWord() {
                     syncHeightToContent()
