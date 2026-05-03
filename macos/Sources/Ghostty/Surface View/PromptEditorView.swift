@@ -19,6 +19,12 @@ extension Ghostty {
         let textView: PromptEditorTextView
         let headerView: PromptHeaderView
 
+        /// Phase-1 completion source: filesystem + executables.
+        let completionEngine = CompletionEngine()
+
+        /// Debounced work item that recomputes the inline ghost.
+        private var ghostQueryWorkItem: DispatchWorkItem?
+
         /// Minimum input rows so the editor never collapses below
         /// usable. Total floor for the editor is 1 header + this =
         /// 3 rows.
@@ -64,6 +70,10 @@ extension Ghostty {
             textView.commitHandler = { [weak self] in self?.commit() }
             textView.contentDidChangeHandler = { [weak self] in
                 self?.syncHeightToContent()
+                self?.scheduleGhostUpdate()
+            }
+            textView.preKeyHandler = { [weak self] event in
+                self?.handlePreKey(event) ?? false
             }
 
             pwdCancellable = owner.$pwd.sink { [weak self] _ in
@@ -282,6 +292,95 @@ extension Ghostty {
             }
         }
 
+        // MARK: - Tab completion (Phase 1: filesystem + executables)
+
+        /// Debounce + recompute the inline ghost based on current
+        /// textView contents and cursor position.
+        func scheduleGhostUpdate() {
+            ghostQueryWorkItem?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.updateGhostNow()
+            }
+            ghostQueryWorkItem = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + .milliseconds(80),
+                execute: work)
+        }
+
+        private func updateGhostNow() {
+            guard !textView.string.isEmpty else {
+                textView.setGhost(nil)
+                return
+            }
+            // Cursor must be at the end of typed content for the ghost
+            // to appear (otherwise the user is editing in the middle
+            // and a trailing ghost would be confusing).
+            let userTextLen = textView.userTextLength()
+            if textView.selectedRange().location < userTextLen {
+                textView.setGhost(nil)
+                return
+            }
+
+            let line = textView.string
+            let cursor = textView.selectedRange().location
+            let pwd = owner?.pwd ?? FileManager.default.currentDirectoryPath
+            guard let candidate = completionEngine.bestInlineCompletion(
+                line: line,
+                cursor: cursor,
+                pwd: pwd
+            ) else {
+                textView.setGhost(nil)
+                return
+            }
+
+            // Compute the suffix to display by extracting the partial
+            // word ending at the cursor.
+            let chars = Array(line)
+            var wordStart = cursor
+            while wordStart > 0 && !isWordBreak(chars[wordStart - 1]) {
+                wordStart -= 1
+            }
+            let partial = String(chars[wordStart..<cursor])
+            let suffix = candidate.suffix(after: partial)
+            textView.setGhost(suffix.isEmpty ? nil : suffix)
+        }
+
+        private func isWordBreak(_ c: Character) -> Bool {
+            if c.isWhitespace { return true }
+            switch c {
+            case ";", "|", "&", "(", ")", "<", ">", "`": return true
+            default: return false
+            }
+        }
+
+        /// Pre-key hook: lets the editor view consume Tab / → / Esc
+        /// for completion ghost handling before the textView's normal
+        /// keyDown processing. Returns true if the event was consumed.
+        private func handlePreKey(_ event: NSEvent) -> Bool {
+            // Tab → accept whole ghost.
+            if event.keyCode == 48 {  // Tab
+                if textView.acceptGhost() {
+                    syncHeightToContent()
+                    return true
+                }
+            }
+            // Right arrow → accept next word of ghost.
+            if event.keyCode == 124 {  // Right arrow
+                if textView.acceptGhostWord() {
+                    syncHeightToContent()
+                    return true
+                }
+            }
+            // Esc → dismiss ghost.
+            if event.keyCode == 53 {  // Escape
+                if textView.hasGhost {
+                    textView.setGhost(nil)
+                    return true
+                }
+            }
+            return false
+        }
+
         func commit() {
             guard let owner, let cSurface = owner.surface else { return }
             let payload = textView.string
@@ -490,8 +589,133 @@ extension Ghostty {
         weak var owner: SurfaceView?
         var commitHandler: (() -> Void)?
         var contentDidChangeHandler: (() -> Void)?
+        /// Pre-key hook owned by PromptEditorView. Returns true if the
+        /// event was consumed (e.g. Tab accepted a ghost).
+        var preKeyHandler: ((NSEvent) -> Bool)?
+
+        /// Range in `textStorage` where the inline ghost is currently
+        /// inserted, or nil if no ghost is showing.
+        private var ghostRange: NSRange?
+
+        var hasGhost: Bool { ghostRange != nil }
+
+        /// Length of the user's typed text (excludes the ghost).
+        func userTextLength() -> Int {
+            guard let storage = textStorage else { return 0 }
+            if let g = ghostRange { return storage.length - g.length }
+            return storage.length
+        }
+
+        /// Insert/replace the inline ghost with the given suffix. Pass
+        /// nil (or empty) to clear.
+        func setGhost(_ suffix: String?) {
+            guard let storage = textStorage else { return }
+            // Remove any existing ghost first.
+            if let g = ghostRange {
+                let safe = NSRange(
+                    location: g.location,
+                    length: min(g.length, max(0, storage.length - g.location)))
+                if safe.length > 0 {
+                    storage.deleteCharacters(in: safe)
+                }
+                ghostRange = nil
+            }
+            guard let s = suffix, !s.isEmpty else { return }
+            let cursor = selectedRange().location
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: (textColor ?? NSColor.textColor)
+                    .withAlphaComponent(0.40),
+            ]
+            storage.insert(
+                NSAttributedString(string: s, attributes: attrs),
+                at: cursor)
+            // Restore cursor position so it stays BEFORE the ghost.
+            setSelectedRange(NSRange(location: cursor, length: 0))
+            ghostRange = NSRange(location: cursor, length: (s as NSString).length)
+        }
+
+        /// Accept the entire ghost suffix as real text. Returns true
+        /// if a ghost was accepted; false if no ghost was present.
+        func acceptGhost() -> Bool {
+            guard let storage = textStorage, let g = ghostRange else { return false }
+            // Re-style the ghost range as normal text (drop the
+            // dimmed alpha) — this commits it.
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: textColor ?? NSColor.textColor,
+            ]
+            storage.setAttributes(attrs, range: g)
+            setSelectedRange(NSRange(location: g.location + g.length, length: 0))
+            ghostRange = nil
+            didChangeText()
+            return true
+        }
+
+        /// Accept the next "word" of the ghost (Fish-style → arrow
+        /// behavior). A word is a run of non-whitespace chars,
+        /// followed by any trailing whitespace (so spaces between
+        /// words come along with the preceding word).
+        func acceptGhostWord() -> Bool {
+            guard let storage = textStorage, let g = ghostRange else { return false }
+            let s = storage.attributedSubstring(from: g).string
+            // Drop a leading run of whitespace + a run of non-WS.
+            // Simpler: take chars until we cross a WS→non-WS boundary
+            // after we've started consuming non-WS.
+            var consumed = 0
+            var sawNonWS = false
+            for ch in s {
+                if ch.isWhitespace {
+                    if sawNonWS {
+                        consumed += 1  // include trailing WS
+                        // Continue while WS, then stop on next non-WS.
+                        // Simpler exit: break here to take WS as the
+                        // boundary — but Fish includes a single space.
+                        // We'll consume only one space then stop.
+                        break
+                    }
+                    consumed += 1
+                } else {
+                    sawNonWS = true
+                    consumed += 1
+                }
+            }
+            guard consumed > 0 else { return false }
+
+            // If consumed everything, just accept the whole ghost.
+            if consumed >= g.length {
+                return acceptGhost()
+            }
+
+            // Re-style the consumed portion as real text and shrink
+            // the ghost range to the remaining suffix.
+            let acceptRange = NSRange(location: g.location, length: consumed)
+            let realAttrs: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: textColor ?? NSColor.textColor,
+            ]
+            storage.setAttributes(realAttrs, range: acceptRange)
+            ghostRange = NSRange(
+                location: g.location + consumed,
+                length: g.length - consumed)
+            setSelectedRange(NSRange(location: g.location + consumed, length: 0))
+            didChangeText()
+            return true
+        }
 
         override func keyDown(with event: NSEvent) {
+            // Pre-key hook (ghost handling). Owner returns true to
+            // consume.
+            if let handler = preKeyHandler, handler(event) {
+                return
+            }
+            // Any other keystroke that lands here: clear the ghost
+            // before processing so it doesn't end up in committed
+            // text or interfere with cursor math.
+            if hasGhost {
+                setGhost(nil)
+            }
+
             if event.keyCode == 36 &&
                 event.modifierFlags.intersection(
                     [.shift, .command, .option, .control]
