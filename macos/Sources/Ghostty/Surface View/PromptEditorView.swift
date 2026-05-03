@@ -323,8 +323,15 @@ extension Ghostty {
             let geom = currentGeometry()
             let cols = max(20, Int(geom.cols))
 
+            // Match the macOS menu-bar date/time format:
+            //   "Sun May 3 4:54 a.m."
+            // - EEE / MMM / d → no leading zeros
+            // - h:mm → 12-hour, hour without leading zero
+            // - amSymbol / pmSymbol overrides default "AM"/"PM" → "a.m."/"p.m."
             let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm"
+            formatter.dateFormat = "EEE MMM d h:mm a"
+            formatter.amSymbol = "a.m."
+            formatter.pmSymbol = "p.m."
             let stamp = formatter.string(from: Date())
 
             // The label inside the separator is the captured shell
