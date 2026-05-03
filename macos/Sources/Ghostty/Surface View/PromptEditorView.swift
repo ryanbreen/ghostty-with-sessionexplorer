@@ -102,6 +102,20 @@ extension Ghostty {
             pwdCancellable = owner.$pwd.sink { [weak self] _ in
                 DispatchQueue.main.async { self?.refreshHeaderText() }
             }
+
+            // Reflow block separators when the surface is resized
+            // (font change, split, etc.) so they fill the new column
+            // count instead of leaving truncated/short rules behind.
+            owner.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(surfaceFrameDidChange),
+                name: NSView.frameDidChangeNotification,
+                object: owner)
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
         }
 
         required init?(coder: NSCoder) {
@@ -704,6 +718,20 @@ extension Ghostty {
         /// Styled dim cyan via ANSI. Width is computed to fit the
         /// current grid column count exactly so the line spans the
         /// viewport edge-to-edge.
+        /// Build the body of a block separator (no leading/trailing
+        /// CR/LF, no ANSI styling). Used by both the commit-time
+        /// injection AND the resize-time rewrite, so they produce
+        /// identical output for the same label/stamp at the same width.
+        func separatorBody(label: String, stamp: String, cols: Int) -> String {
+            let prefix = "━━━  \(label)  "
+            let suffix = "  \(stamp) ━━━"
+            // -1 from cols to give one column of slack so a perfectly-
+            // cols-wide line doesn't trigger implicit wrap.
+            let dashes = max(3, (cols - 1) - prefix.count - suffix.count)
+            let middle = String(repeating: "━", count: dashes)
+            return prefix + middle + suffix
+        }
+
         private func buildBlockSeparator(
             command: String,
             owner: SurfaceView
@@ -739,13 +767,7 @@ extension Ghostty {
             // Heavier glyph (U+2501 ━) + bold + cyan = visible without
             // shouting. Two cells of padding around the label so the
             // text breathes inside the rule.
-            let prefix = "━━━  \(label)  "
-            let suffix = "  \(stamp) ━━━"
-            // -1 from cols to give one column of slack so a perfectly-
-            // cols-wide line doesn't trigger implicit wrap.
-            let dashes = max(3, (cols - 1) - prefix.count - suffix.count)
-            let middle = String(repeating: "━", count: dashes)
-            let body = prefix + middle + suffix
+            let body = separatorBody(label: label, stamp: stamp, cols: cols)
 
             // Leading \r\n → leave one blank row above the separator
             //   for breathing room (the \r resets cursor X in case it
@@ -758,6 +780,103 @@ extension Ghostty {
             //   and sits between the separator and the first line of
             //   real output.
             return "\r\n\u{1B}[1;36m\(body)\u{1B}[0m\r\n\r\n"
+        }
+
+        // MARK: - Resize-driven separator reflow
+
+        private var separatorRewriteWork: DispatchWorkItem?
+
+        @objc private func surfaceFrameDidChange() {
+            separatorRewriteWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.rewriteBlockSeparators()
+            }
+            separatorRewriteWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + .milliseconds(150),
+                execute: work)
+        }
+
+        /// Find every block-separator row in the visible viewport and
+        /// rewrite it at the current column count, so resizes (font
+        /// change, split) don't leave truncated/short rules behind.
+        private func rewriteBlockSeparators() {
+            guard let owner, let cSurface = owner.surface else { return }
+
+            let viewSel = ghostty_selection_s(
+                top_left: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                    x: 0, y: 0),
+                bottom_right: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                    x: 0, y: 0),
+                rectangle: false)
+            var textBuf = ghostty_text_s()
+            guard ghostty_surface_read_text(cSurface, viewSel, &textBuf)
+            else { return }
+            defer { ghostty_surface_free_text(cSurface, &textBuf) }
+            guard let cstr = textBuf.text else { return }
+            let viewportText = String(cString: cstr)
+
+            let cols = max(20, Int(currentGeometry().cols))
+            var rewrites: [(row: Int, body: String)] = []
+            for (idx, raw) in viewportText
+                .components(separatedBy: "\n")
+                .enumerated()
+            {
+                guard let (label, stamp) = parseSeparator(raw) else { continue }
+                let body = separatorBody(label: label, stamp: stamp, cols: cols)
+                rewrites.append((row: idx + 1, body: body))  // ANSI: 1-indexed
+            }
+            guard !rewrites.isEmpty else { return }
+
+            // One ANSI sequence: save cursor → for each row,
+            // position+erase+write → restore cursor. Single injection
+            // keeps cursor state consistent.
+            var ansi = "\u{1B}[s"
+            for r in rewrites {
+                ansi += "\u{1B}[\(r.row);1H"
+                ansi += "\u{1B}[2K"
+                ansi += "\u{1B}[1;36m\(r.body)\u{1B}[0m"
+            }
+            ansi += "\u{1B}[u"
+
+            ansi.withCString { cs in
+                ghostty_surface_inject_output(
+                    cSurface, cs, UInt(strlen(cs)))
+            }
+        }
+
+        /// Returns (label, stamp) if the line is one of our block
+        /// separators, nil otherwise. Format we expect:
+        ///   ━━━  <label>  ━━━…━━━ <stamp> ━━━
+        private func parseSeparator(_ line: String) -> (String, String)? {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("━") && trimmed.hasSuffix("━") else { return nil }
+            var segments: [String] = []
+            var current = ""
+            var dashRun = 0
+            for ch in trimmed {
+                if ch == "━" {
+                    if dashRun == 0 && !current.isEmpty {
+                        let seg = current.trimmingCharacters(in: .whitespaces)
+                        if !seg.isEmpty { segments.append(seg) }
+                        current = ""
+                    }
+                    dashRun += 1
+                } else {
+                    dashRun = 0
+                    current.append(ch)
+                }
+            }
+            if !current.isEmpty {
+                let seg = current.trimmingCharacters(in: .whitespaces)
+                if !seg.isEmpty { segments.append(seg) }
+            }
+            guard segments.count == 2 else { return nil }
+            return (segments[0], segments[1])
         }
 
         func yieldFocusToTerminal() {
