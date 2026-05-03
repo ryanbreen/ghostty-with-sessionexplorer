@@ -347,9 +347,14 @@ extension Ghostty {
             let middle = String(repeating: "─", count: dashes)
             let body = prefix + middle + suffix
 
-            // Dim + cyan; reset; CR+LF (inject_output bypasses the
-            // line discipline that would translate \n to \r\n).
-            return "\u{1B}[2;36m\(body)\u{1B}[0m\r\n"
+            // Leading \r so we always start at column 0 — when commit
+            // fires the cursor is parked at the prompt's input column
+            // (e.g. col 12 after "wrb@Mac ~ % "), and without resetting
+            // X the separator starts mid-line and wraps onto a second
+            // row. Trailing \r\n moves to the next line for the shell's
+            // echo (inject_output bypasses the line discipline that
+            // would otherwise translate \n to \r\n).
+            return "\r\u{1B}[2;36m\(body)\u{1B}[0m\r\n"
         }
 
         func yieldFocusToTerminal() {
