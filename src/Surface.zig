@@ -3486,10 +3486,21 @@ fn commandOutputAtLocked(
         }
     }
 
-    if (end <= start + 1) return null;
+    // Skip past any `.prompt_continuation` rows immediately below the
+    // prompt — those are the editor's injected rule + padding rows,
+    // not real shell output.
+    var output_start: usize = start + 1;
+    while (output_start < end) : (output_start += 1) {
+        const pin = screen.pages.pin(.{
+            .viewport = .{ .x = 0, .y = @intCast(output_start) },
+        }) orelse break;
+        if (pin.rowAndCell().row.semantic_prompt != .prompt_continuation) break;
+    }
+
+    if (end <= output_start) return null;
 
     const tl_pin = screen.pages.pin(.{
-        .viewport = .{ .x = 0, .y = @intCast(start + 1) },
+        .viewport = .{ .x = 0, .y = @intCast(output_start) },
     }) orelse return null;
     // Bottom-right pin uses the LAST column of the last row so the
     // selection includes the full final line (was bug: x=0 only
@@ -3577,11 +3588,29 @@ pub fn editorCommit(self: *Surface, text: []const u8) !void {
     // handler reads this when OSC 133;C arrives and uses `deleteLines`
     // to strip the kernel's echo of the command — our block separator
     // already shows the command, so the bare echo is redundant.
+    //
+    // Also: walk back from the cursor to the prompt row and mark every
+    // row we just injected (separator + padding rows) as
+    // `.prompt_continuation`. `commandOutputAt` skips continuation
+    // rows, so right-click "Copy Command Output" / Cmd+Shift+C return
+    // just the actual command output, not the rule + padding chrome.
     {
         self.renderer_state.mutex.lock();
         defer self.renderer_state.mutex.unlock();
-        const cur_y = self.io.terminal.screens.active.cursor.y;
+        const screen = self.io.terminal.screens.active;
+        const cur_y = screen.cursor.y;
         self.editor.markCommitStart(@intCast(cur_y));
+
+        var y: usize = cur_y;
+        while (y > 0) {
+            y -= 1;
+            const pin = screen.pages.pin(.{
+                .active = .{ .x = 0, .y = @intCast(y) },
+            }) orelse break;
+            const rac = pin.rowAndCell();
+            if (rac.row.semantic_prompt == .prompt) break;
+            rac.row.semantic_prompt = .prompt_continuation;
+        }
     }
 
     const buf = try self.alloc.alloc(u8, text.len + 1);
