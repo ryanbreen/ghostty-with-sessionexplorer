@@ -3431,9 +3431,28 @@ pub fn commandOutputAt(
 ) !?Text {
     self.renderer_state.mutex.lock();
     defer self.renderer_state.mutex.unlock();
+    return try self.commandOutputAtLocked(alloc, viewport_y);
+}
 
+/// Convenience: walks up from one row above the cursor to find the
+/// previous command's output. Used by the Cmd+Shift+C "copy previous
+/// command output" shortcut.
+pub fn previousCommandOutput(self: *Surface, alloc: Allocator) !?Text {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+    const cur_y = self.io.terminal.screens.active.cursor.y;
+    if (cur_y == 0) return null;
+    return try self.commandOutputAtLocked(alloc, cur_y - 1);
+}
+
+fn commandOutputAtLocked(
+    self: *Surface,
+    alloc: Allocator,
+    viewport_y: usize,
+) !?Text {
     const screen = self.io.terminal.screens.active;
     const total_rows = screen.pages.rows;
+    const total_cols = screen.pages.cols;
     if (viewport_y >= total_rows) return null;
 
     // Walk up from viewport_y until we find a row with a prompt
@@ -3472,8 +3491,15 @@ pub fn commandOutputAt(
     const tl_pin = screen.pages.pin(.{
         .viewport = .{ .x = 0, .y = @intCast(start + 1) },
     }) orelse return null;
+    // Bottom-right pin uses the LAST column of the last row so the
+    // selection includes the full final line (was bug: x=0 only
+    // grabbed column 0 of the last row, truncating multi-thousand-
+    // char outputs to "everything except the final line's body").
     const br_pin = screen.pages.pin(.{
-        .viewport = .{ .x = 0, .y = @intCast(end - 1) },
+        .viewport = .{
+            .x = if (total_cols > 0) @intCast(total_cols - 1) else 0,
+            .y = @intCast(end - 1),
+        },
     }) orelse return null;
 
     const sel = terminal.Selection.init(tl_pin, br_pin, false);

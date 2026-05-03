@@ -1209,6 +1209,12 @@ GHOSTTY_API bool ghostty_surface_command_output_at(ghostty_surface_t,
                                                       uint32_t,
                                                       ghostty_text_s*);
 
+// Convenience over command_output_at: returns the previous command's
+// output, the one whose prompt sits above the cursor. Used by the
+// Cmd+Shift+C shortcut.
+GHOSTTY_API bool ghostty_surface_previous_command_output(ghostty_surface_t,
+                                                            ghostty_text_s*);
+
 // Geometry the apprt's editor view needs to size itself: the row
 // count between the shell's cursor row and the viewport's bottom
 // (the "natural" editor area), and the renderer's bottom padding in

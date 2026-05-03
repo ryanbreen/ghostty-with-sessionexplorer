@@ -499,7 +499,25 @@ extension Ghostty {
                 commitHandler?()
                 return
             }
+            // Cmd+Shift+C → copy the previous command's output to
+            // the clipboard. Bubbles up to SurfaceView's handler so
+            // the editor-focused and terminal-focused paths share
+            // implementation.
+            if isCopyPreviousChord(event) {
+                owner?.copyPreviousCommandOutput()
+                return
+            }
             super.keyDown(with: event)
+        }
+
+        private func isCopyPreviousChord(_ event: NSEvent) -> Bool {
+            let mods = event.modifierFlags.intersection(
+                [.command, .shift, .option, .control])
+            guard mods == [.command, .shift] else { return false }
+            // `c` (lowercase) ignoring modifiers — Cmd+Shift+C reports
+            // as uppercase `C` in `characters` because Shift is held,
+            // but `charactersIgnoringModifiers` returns lowercase.
+            return event.charactersIgnoringModifiers?.lowercased() == "c"
         }
 
         override func didChangeText() {

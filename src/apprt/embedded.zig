@@ -2008,6 +2008,28 @@ pub const CAPI = struct {
             return false;
         } orelse return false;
 
+        fillText(result, text);
+        return true;
+    }
+
+    /// Convenience: returns the output of the previous command
+    /// (the one whose prompt is above the cursor). Used by Cmd+Shift+C.
+    export fn ghostty_surface_previous_command_output(
+        surface: *Surface,
+        result: *Text,
+    ) bool {
+        const text = surface.core_surface.previousCommandOutput(
+            global.alloc,
+        ) catch |err| {
+            log.warn("error reading previous command output err={}", .{err});
+            return false;
+        } orelse return false;
+
+        fillText(result, text);
+        return true;
+    }
+
+    fn fillText(result: *Text, text: CoreSurface.Text) void {
         const vp: CoreSurface.Text.Viewport = text.viewport orelse .{
             .tl_px_x = -1,
             .tl_px_y = -1,
@@ -2022,7 +2044,6 @@ pub const CAPI = struct {
             .text = text.text.ptr,
             .text_len = text.text.len,
         };
-        return true;
     }
 
     /// Geometry the apprt's editor view needs to size itself: the row

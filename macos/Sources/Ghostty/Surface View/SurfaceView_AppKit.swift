@@ -1125,6 +1125,18 @@ extension Ghostty {
                 return
             }
 
+            // Cmd+Shift+C → copy previous command's output. Intercept
+            // before forwarding to libghostty so the chord doesn't
+            // also send a stray ^C / clear-line to the shell.
+            let mods = event.modifierFlags.intersection(
+                [.command, .shift, .option, .control])
+            if mods == [.command, .shift] &&
+                event.charactersIgnoringModifiers?.lowercased() == "c"
+            {
+                copyPreviousCommandOutput()
+                return
+            }
+
             // On any keyDown event we unset our bell state
             bell = false
 
@@ -1815,6 +1827,32 @@ extension Ghostty {
             NSWorkspace.shared.open(url)
         }
 
+        /// Copy the previous command's output to the system clipboard.
+        /// Bound to Cmd+Shift+C — works whether keyboard focus is on
+        /// the prompt editor or the terminal. Strips trailing
+        /// whitespace/newlines so the paste target gets a clean run
+        /// of bytes.
+        func copyPreviousCommandOutput() {
+            guard let surface = self.surface else { return }
+            var text = ghostty_text_s()
+            guard ghostty_surface_previous_command_output(surface, &text)
+            else { return }
+            defer { ghostty_surface_free_text(surface, &text) }
+            guard let cstr = text.text else { return }
+
+            let raw = String(cString: cstr)
+            // Strip trailing whitespace/newlines for clean pasting.
+            // Don't trim leading — output indentation may be intentional.
+            let trimmed = String(raw.reversed()
+                .drop(while: { $0.isWhitespace || $0.isNewline })
+                .reversed())
+            guard !trimmed.isEmpty else { return }
+
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(trimmed, forType: .string)
+        }
+
         /// Backing for the right-click "Copy Command Output" menu item.
         /// The menu item carries the viewport row of the click in its
         /// `representedObject`; we pass it through to libghostty's
@@ -1834,8 +1872,12 @@ extension Ghostty {
             defer { ghostty_surface_free_text(surface, &text) }
             guard let cstr = text.text else { return }
 
-            let str = String(cString: cstr)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let raw = String(cString: cstr)
+            // Strip trailing whitespace/newlines only — output's
+            // leading indentation may be intentional.
+            let str = String(raw.reversed()
+                .drop(while: { $0.isWhitespace || $0.isNewline })
+                .reversed())
             guard !str.isEmpty else { return }
 
             let pb = NSPasteboard.general
