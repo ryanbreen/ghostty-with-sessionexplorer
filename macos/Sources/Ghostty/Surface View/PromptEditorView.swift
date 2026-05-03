@@ -329,6 +329,17 @@ extension Ghostty {
         }
 
         private func updateGhostNow() {
+            // Never show the inline ghost when the multi-match
+            // popover is up — they're alternative UIs for the same
+            // intent. Coexistence was causing the ghost to get
+            // inserted at the cursor while the popover was showing,
+            // and then accepting the popover would write the
+            // chosen suffix BEFORE the ghost, stranding the ghost's
+            // tracked range so it couldn't be cleared.
+            if popoverIsShown {
+                textView.setGhost(nil)
+                return
+            }
             guard !textView.string.isEmpty else {
                 textView.setGhost(nil)
                 return
@@ -581,6 +592,13 @@ extension Ghostty {
         }
 
         private func insertCompletion(_ comp: CompletionEngine.Completion) {
+            // Clear any inline ghost FIRST. If we don't, `line` below
+            // would include the ghost text, and inserting the chosen
+            // suffix at the cursor would push the ghost forward in
+            // storage — leaving its tracked NSRange pointing at the
+            // wrong location and ultimately stranding the ghost
+            // visibly at the end of the line.
+            textView.setGhost(nil)
             let line = textView.string
             let cursor = textView.selectedRange().location
             let partial = completionEngine.currentWord(
