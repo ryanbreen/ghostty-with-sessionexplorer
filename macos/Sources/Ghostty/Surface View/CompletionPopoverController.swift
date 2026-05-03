@@ -150,8 +150,11 @@ final class CompletionPopoverController: NSObject {
 
     /// Compute the popover's screen frame so it sits right next to
     /// the anchor (the cursor's screen rect). Default placement: the
-    /// popover's top-left corner sits at `(anchor.maxX, anchor.maxY)`
-    /// so it grows down and to the right of the cursor.
+    /// popover's top-left corner sits at `(anchor.maxX + gap, anchor.maxY)`
+    /// so it grows down and to the right of the cursor with a small
+    /// gap for breathing room.
+    private static let cursorGap: CGFloat = 2
+
     private func computeFrame(for anchor: NSRect) -> NSRect {
         let size = NSSize(
             width: Self.popoverWidth,
@@ -159,13 +162,13 @@ final class CompletionPopoverController: NSObject {
         // macOS screen coords are y-up. anchor.maxY is the TOP of the
         // cursor's screen rect; we want the popover's TOP at that
         // same y so it grows downward.
-        var x = anchor.maxX
+        var x = anchor.maxX + Self.cursorGap
         var y = anchor.maxY - size.height
         // Clamp to the visible screen so it doesn't drift off-screen.
         if let screen = NSScreen.main?.visibleFrame {
             if x + size.width > screen.maxX {
                 // Not enough room on the right — flip to LEFT of cursor.
-                x = anchor.minX - size.width
+                x = anchor.minX - size.width - Self.cursorGap
             }
             if y < screen.minY { y = screen.minY }
             if y + size.height > screen.maxY {
