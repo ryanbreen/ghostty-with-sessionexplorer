@@ -499,12 +499,28 @@ extension Ghostty {
                 commitHandler?()
                 return
             }
-            // Cmd+Shift+C → copy the previous command's output to
-            // the clipboard. Bubbles up to SurfaceView's handler so
-            // the editor-focused and terminal-focused paths share
-            // implementation.
+            // Cmd+Shift+C → copy the previous command's output.
             if isCopyPreviousChord(event) {
                 owner?.copyPreviousCommandOutput()
+                return
+            }
+            // Ctrl+C → clear the editor's input (shell-style line
+            // cancel). Doesn't send anything to the shell — the
+            // user's intent is "abandon this draft and start over".
+            if isControlOnlyChord(event, "c") {
+                if let storage = self.textStorage {
+                    storage.deleteCharacters(
+                        in: NSRange(location: 0, length: storage.length))
+                }
+                didChangeText()
+                return
+            }
+            // Ctrl+V → paste from the system clipboard. NSTextView
+            // binds Cmd+V natively but not Ctrl+V; bind it here so
+            // Ctrl+V works the same as Cmd+V (cross-platform muscle
+            // memory + matches what most non-mac shells expect).
+            if isControlOnlyChord(event, "v") {
+                self.paste(self)
                 return
             }
             super.keyDown(with: event)
@@ -514,10 +530,15 @@ extension Ghostty {
             let mods = event.modifierFlags.intersection(
                 [.command, .shift, .option, .control])
             guard mods == [.command, .shift] else { return false }
-            // `c` (lowercase) ignoring modifiers — Cmd+Shift+C reports
-            // as uppercase `C` in `characters` because Shift is held,
-            // but `charactersIgnoringModifiers` returns lowercase.
             return event.charactersIgnoringModifiers?.lowercased() == "c"
+        }
+
+        /// True if the event is `Ctrl+<char>` with no other modifiers.
+        private func isControlOnlyChord(_ event: NSEvent, _ char: String) -> Bool {
+            let mods = event.modifierFlags.intersection(
+                [.command, .shift, .option, .control])
+            guard mods == [.control] else { return false }
+            return event.charactersIgnoringModifiers?.lowercased() == char
         }
 
         override func didChangeText() {
