@@ -409,6 +409,18 @@ extension Ghostty {
                     return true
                 }
             }
+            // Return → if the popover is open, accept the highlighted
+            // entry instead of committing. Empty unmodified Enter still
+            // commits when no popover is showing (existing behavior).
+            if event.keyCode == 36 &&
+                event.modifierFlags.intersection(
+                    [.shift, .command, .option, .control]
+                ).isEmpty
+            {
+                if popoverIsShown {
+                    return acceptPopoverSelectionFully()
+                }
+            }
             // Esc.
             if event.keyCode == 53 {
                 if popoverIsShown {
@@ -486,25 +498,56 @@ extension Ghostty {
                 completionPopover.behavior = .transient
                 completionPopover.animates = false
                 let anchorRect = popoverAnchorRect()
+                // .maxX → popover flies out to the RIGHT of the
+                // cursor, like an inline contextual menu. AppKit will
+                // auto-flip to the left if there's no room on the
+                // right.
                 completionPopover.show(
                     relativeTo: anchorRect,
                     of: textView,
-                    preferredEdge: .maxY)
+                    preferredEdge: .maxX)
             }
             completionPopoverController.reload()
         }
 
         private func popoverAnchorRect() -> NSRect {
+            // Anchor at the cursor's pixel position. Use the layout
+            // manager (gives correct positions through wraps and
+            // multi-line content), and fall back to a monospaced
+            // estimate if the layout manager isn't ready.
             let cursor = textView.selectedRange().location
-            let glyphRange = NSRange(location: cursor, length: 0)
-            let textRect = textView.firstRect(
-                forCharacterRange: glyphRange, actualRange: nil)
-            // textRect is in screen coords. Convert to textView local.
-            guard let window = textView.window else {
-                return NSRect(x: 0, y: 0, width: 1, height: 1)
+            let inset = textView.textContainerInset
+            let cellH = owner?.cellSize.height ?? 17
+            let cellW = owner?.cellSize.width ?? 8
+
+            if let layoutManager = textView.layoutManager,
+                let textContainer = textView.textContainer
+            {
+                layoutManager.ensureLayout(for: textContainer)
+                let glyphIndex = layoutManager.glyphIndexForCharacter(at: cursor)
+                var rect = layoutManager.boundingRect(
+                    forGlyphRange: NSRange(location: glyphIndex, length: 1),
+                    in: textContainer)
+                if rect.size.width == 0 || rect.size.height == 0 {
+                    // Fallback: bounding rect of the line fragment.
+                    rect = layoutManager.lineFragmentUsedRect(
+                        forGlyphAt: glyphIndex, effectiveRange: nil)
+                }
+                // Translate from textContainer coords to view coords.
+                rect.origin.x += inset.width
+                rect.origin.y += inset.height
+                if rect.width == 0 { rect.size.width = max(1, cellW) }
+                if rect.height == 0 { rect.size.height = cellH }
+                // Flip Y if the textView is flipped — most NSTextViews
+                // ARE flipped (y-down) so this matches what AppKit
+                // expects for the positioningRect.
+                return rect
             }
-            let windowRect = window.convertFromScreen(textRect)
-            return textView.convert(windowRect, from: nil)
+
+            // Fallback: estimate cursor X from character index.
+            let x = inset.width + CGFloat(cursor) * cellW
+            let y = inset.height
+            return NSRect(x: x, y: y, width: max(1, cellW), height: cellH)
         }
 
         /// Re-query and update / dismiss the popover after the user
