@@ -363,9 +363,13 @@ extension Ghostty {
             //   for breathing room (the \r resets cursor X in case it
             //   was parked at the editor's input column on commit).
             // \x1b[1;36m → bold + cyan.
-            // Trailing \r\n → next line for the shell's echo to land
-            //   on (the stream handler will then `deleteLines` it).
-            return "\r\n\u{1B}[1;36m\(body)\u{1B}[0m\r\n"
+            // Trailing \r\n\r\n → advance cursor TWO rows past the
+            //   separator. The first \r\n is the row the shell's echo
+            //   will land on (stream handler erases it); the second
+            //   \r\n is a blank padding row that survives the erase
+            //   and sits between the separator and the first line of
+            //   real output.
+            return "\r\n\u{1B}[1;36m\(body)\u{1B}[0m\r\n\r\n"
         }
 
         func yieldFocusToTerminal() {
