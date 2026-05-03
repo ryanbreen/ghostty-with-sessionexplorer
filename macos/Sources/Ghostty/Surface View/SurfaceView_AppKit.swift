@@ -1668,6 +1668,19 @@ extension Ghostty {
                 openItem.representedObject = URL(fileURLWithPath: pwd)
             }
 
+            // "Refresh Tool Completions" — invalidates cached
+            // subcommand lists for tools whose --help output is
+            // parsed (claude, codex, etc.) and re-queries them.
+            // Auto-refresh on binary mtime change usually catches
+            // upgrades, but this is the manual "I think it's stale"
+            // override.
+            menu.addItem(.separator())
+            let refreshItem = menu.addItem(
+                withTitle: "Refresh Tool Completions",
+                action: #selector(refreshToolCompletions(_:)),
+                keyEquivalent: "")
+            refreshItem.target = self
+
             menu.addItem(.separator())
             item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
@@ -1825,6 +1838,14 @@ extension Ghostty {
         @objc func openCommandPwdInFinder(_ sender: NSMenuItem) {
             guard let url = sender.representedObject as? URL else { return }
             NSWorkspace.shared.open(url)
+        }
+
+        /// Backing for the right-click "Refresh Tool Completions"
+        /// item. Reaches into the prompt editor's CompletionEngine
+        /// and clears + reloads its caches (executables, ssh hosts,
+        /// CLI subcommand --help output for claude/codex/etc.).
+        @objc func refreshToolCompletions(_ sender: NSMenuItem) {
+            promptEditorView?.completionEngine.refreshAllCaches()
         }
 
         /// Copy the previous command's output to the system clipboard.

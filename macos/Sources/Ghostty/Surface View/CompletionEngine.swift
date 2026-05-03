@@ -31,19 +31,22 @@ final class CompletionEngine {
 
     /// Result of parsing the input line.
     private struct Parsed {
-        /// The word currently under the cursor (everything from the
-        /// last whitespace boundary up to the cursor).
         let currentWord: String
-        /// Index in the line where currentWord starts.
         let wordStart: Int
-        /// True if currentWord is the FIRST word on the line (so
-        /// command completion applies).
-        let isCommandPosition: Bool
-        /// The first word of the line (the command being run), if any.
-        /// Used for context-aware completion (e.g. `cd` → directories
-        /// only).
-        let commandWord: String?
+        /// All whitespace-delimited tokens of the current command
+        /// segment (everything since the last `;`, `|`, or `&`).
+        let tokens: [String]
+        /// Index of the token the cursor is currently in. 0 = the
+        /// command itself, 1 = first argument, etc.
+        let argumentIndex: Int
 
+        var commandWord: String? {
+            tokens.first.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        var firstArgument: String? {
+            tokens.count > 1 ? tokens[1] : nil
+        }
+        var isCommandPosition: Bool { argumentIndex == 0 }
         var isDirectoryContext: Bool {
             guard let cmd = commandWord else { return false }
             return ["cd", "pushd", "rmdir"].contains(cmd)
@@ -93,9 +96,47 @@ final class CompletionEngine {
         "ssh", "scp", "sftp", "rsync", "mosh",
     ]
 
+    /// `git <subcommand>` candidates. Hardcoded common list — git
+    /// itself ships hundreds, but these cover ~99% of interactive use.
+    private static let gitSubcommands: [String] = [
+        "add", "am", "annotate", "apply", "archive", "bisect", "blame",
+        "branch", "cat-file", "checkout", "cherry-pick", "clean", "clone",
+        "commit", "config", "describe", "diff", "fetch", "format-patch",
+        "fsck", "gc", "grep", "init", "log", "ls-files", "ls-remote",
+        "merge", "mv", "pull", "push", "rebase", "reflog", "remote",
+        "reset", "restore", "revert", "rm", "shortlog", "show", "stash",
+        "status", "submodule", "switch", "tag", "worktree",
+    ]
+
+    /// Subcommands whose argument is a branch / ref name.
+    private static let gitRefSubcommands: Set<String> = [
+        "checkout", "switch", "branch", "merge", "rebase", "diff", "log",
+        "show", "cherry-pick", "revert", "reset",
+    ]
+
+    /// Commands we auto-discover subcommands for by parsing their
+    /// `--help` output. Cached to disk; auto-refreshed when the
+    /// binary's mtime changes (= the user upgraded the tool); user
+    /// can also trigger a manual refresh via `refreshAllCaches`.
+    private static let helpParseCommands: Set<String> = [
+        "claude", "claude-code", "codex",
+    ]
+
     /// Cached SSH host list, refreshed every `cacheTTL` seconds.
     private var sshHostCache: [String] = []
     private var sshHostCacheBuiltAt: Date = .distantPast
+
+    /// Cached --help-derived subcommands per CLI, persisted to disk.
+    /// Key: command name. Value: { binary mtime, subcommands }.
+    private var cliCache: [String: CachedSubcommands] = [:]
+    struct CachedSubcommands: Codable {
+        let binaryMtime: TimeInterval
+        let subcommands: [String]
+    }
+
+    init() {
+        loadCliCacheFromDisk()
+    }
 
     // MARK: - Public API
 
@@ -151,6 +192,8 @@ final class CompletionEngine {
         if let cmd = parsed.commandWord {
             if Self.fileTakingCommands.contains(cmd) { return true }
             if Self.sshHostCommands.contains(cmd) { return true }
+            if cmd == "git" { return true }
+            if Self.helpParseCommands.contains(cmd) { return true }
         }
         return false
     }
@@ -170,33 +213,69 @@ final class CompletionEngine {
     // MARK: - Parsing
 
     private func parse(line: String, cursor: Int) -> Parsed {
-        // Defensive clamping.
         let cursor = max(0, min(cursor, line.count))
-
-        // Walk back from cursor to find the word start.
         let chars = Array(line)
+
+        // Walk back from cursor to find the current word start.
         var wordStart = cursor
         while wordStart > 0 && !isWordBreak(chars[wordStart - 1]) {
             wordStart -= 1
         }
         let currentWord = String(chars[wordStart..<cursor])
 
-        // Find the first non-whitespace token in the line — that's
-        // the command being run.
-        let trimmed = line.drop(while: { $0.isWhitespace })
-        let firstWordEnd = trimmed.firstIndex(where: { $0.isWhitespace }) ?? trimmed.endIndex
-        let commandWord = String(trimmed[trimmed.startIndex..<firstWordEnd])
+        // Tokenize the line into the current command segment.
+        // Metacharacters (; | &) reset the segment so we're always
+        // working with the LAST command in the line.
+        var tokens: [String] = []
+        var argumentIndex = 0
+        var current = ""
+        var i = 0
+        var cursorTokenAssigned = false
 
-        // We're at the command position iff the cursor's word starts
-        // before / at the first non-whitespace char of the line.
-        let firstNonWS = line.firstIndex(where: { !$0.isWhitespace }).map { line.distance(from: line.startIndex, to: $0) } ?? line.count
-        let isCommandPosition = wordStart <= firstNonWS
+        func flushToken() {
+            tokens.append(current)
+            current = ""
+        }
+
+        while i < chars.count {
+            // If the cursor is at this position and we haven't yet
+            // assigned argumentIndex, it belongs to the current /
+            // soon-to-be token.
+            if i == cursor && !cursorTokenAssigned {
+                argumentIndex = tokens.count
+                cursorTokenAssigned = true
+            }
+
+            let c = chars[i]
+            if c == ";" || c == "|" || c == "&" {
+                if !current.isEmpty { flushToken() }
+                tokens = []
+                argumentIndex = 0
+                cursorTokenAssigned = false
+            } else if c.isWhitespace {
+                if !current.isEmpty { flushToken() }
+            } else {
+                current.append(c)
+            }
+            i += 1
+        }
+        if !cursorTokenAssigned {
+            argumentIndex = current.isEmpty ? tokens.count : tokens.count
+            cursorTokenAssigned = true
+        }
+        if !current.isEmpty { flushToken() }
+        // If the cursor sits in trailing whitespace AFTER the last
+        // token, ensure argumentIndex points just past the last
+        // token (a position waiting for a new argument).
+        if cursor == chars.count && wordStart == cursor {
+            argumentIndex = tokens.count
+        }
 
         return Parsed(
             currentWord: currentWord,
             wordStart: wordStart,
-            isCommandPosition: isCommandPosition,
-            commandWord: commandWord.isEmpty ? nil : commandWord)
+            tokens: tokens,
+            argumentIndex: argumentIndex)
     }
 
     private func isWordBreak(_ c: Character) -> Bool {
@@ -233,6 +312,12 @@ final class CompletionEngine {
         if let cmd = parsed.commandWord {
             if Self.sshHostCommands.contains(cmd) {
                 return sshHostCandidates(prefix: word)
+            }
+            if cmd == "git" {
+                return gitCandidates(parsed: parsed, pwd: pwd)
+            }
+            if Self.helpParseCommands.contains(cmd) {
+                return cliSubcommandCandidates(cmd: cmd, prefix: word)
             }
         }
 
@@ -428,6 +513,215 @@ final class CompletionEngine {
         regex += "$"
         return name.range(of: regex, options: .regularExpression) != nil
     }
+
+    // MARK: - Git source
+
+    private func gitCandidates(parsed: Parsed, pwd: String) -> [Completion] {
+        // First arg after `git` → subcommand list (hardcoded).
+        if parsed.argumentIndex == 1 {
+            return Self.gitSubcommands.map { .init(text: $0, kind: .executable) }
+        }
+        // Subsequent args of branch/ref-taking subcommands → live
+        // branches in this repo.
+        if let sub = parsed.firstArgument,
+            Self.gitRefSubcommands.contains(sub)
+        {
+            return gitBranches(pwd: pwd).map { .init(text: $0, kind: .executable) }
+        }
+        return []
+    }
+
+    private func gitBranches(pwd: String) -> [String] {
+        let output = runProcess(
+            launchPath: "/usr/bin/env",
+            args: ["git", "-C", pwd, "branch", "--list",
+                   "--format=%(refname:short)"],
+            timeout: 0.5)
+        guard let text = output else { return [] }
+        return text
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    // MARK: - CLI subcommand source (claude / codex / etc.)
+
+    private func cliSubcommandCandidates(cmd: String, prefix: String) -> [Completion] {
+        // Only complete the FIRST argument as a subcommand. Future
+        // phases can recursively parse `cmd subcommand --help` for
+        // sub-subcommands; for now, layer 1 only.
+        refreshCliCacheIfNeeded(for: cmd)
+        guard let cached = cliCache[cmd] else { return [] }
+        return cached.subcommands
+            .filter { $0.hasPrefix(prefix) }
+            .map { .init(text: $0, kind: .executable) }
+    }
+
+    private func refreshCliCacheIfNeeded(for cmd: String) {
+        guard let binPath = findOnPath(cmd) else { return }
+        let mtime = fileMtime(binPath) ?? 0
+        if let cached = cliCache[cmd], cached.binaryMtime == mtime {
+            return
+        }
+        let subcommands = parseHelpForSubcommands(cmd: cmd)
+        guard !subcommands.isEmpty else { return }
+        cliCache[cmd] = .init(binaryMtime: mtime, subcommands: subcommands)
+        saveCliCacheToDisk()
+    }
+
+    /// Public entry point for "Refresh tool completions" menu item.
+    /// Invalidates all CLI caches and re-runs `--help` for each.
+    func refreshAllCaches() {
+        executableCache = []
+        executableCacheBuiltAt = .distantPast
+        sshHostCache = []
+        sshHostCacheBuiltAt = .distantPast
+        cliCache = [:]
+        for cmd in Self.helpParseCommands {
+            refreshCliCacheIfNeeded(for: cmd)
+        }
+    }
+
+    private func parseHelpForSubcommands(cmd: String) -> [String] {
+        guard let output = runProcess(
+            launchPath: "/usr/bin/env",
+            args: [cmd, "--help"],
+            timeout: 2.0
+        ) else { return [] }
+        return extractSubcommandsFromHelp(output)
+    }
+
+    /// Look for a "Commands:" / "Subcommands:" / "Available commands:"
+    /// section in --help output and pull out the indented entries.
+    /// Each entry's first whitespace-delimited token is the
+    /// subcommand name; the rest is the description (ignored here).
+    private func extractSubcommandsFromHelp(_ help: String) -> [String] {
+        var subcommands: [String] = []
+        var inSection = false
+        let sectionHeaders: [String] = [
+            "commands:", "subcommands:", "available commands:",
+            "available subcommands:",
+        ]
+        for raw in help.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let lower = trimmed.lowercased()
+
+            if sectionHeaders.contains(where: { lower.hasSuffix($0) }) {
+                inSection = true
+                continue
+            }
+            if !inSection { continue }
+            if trimmed.isEmpty { inSection = false; continue }
+
+            // Stop at the next section header (any non-indented line
+            // that ends with `:`).
+            if !line.first!.isWhitespace && trimmed.hasSuffix(":") {
+                inSection = false
+                continue
+            }
+            // Non-indented lines that aren't section headers: end of
+            // the current section.
+            if !line.first!.isWhitespace {
+                inSection = false
+                continue
+            }
+
+            // Indented entry: first token is the subcommand. Skip if
+            // it doesn't look like an identifier (starts with `-`,
+            // contains weird punctuation, etc.).
+            let firstToken = trimmed.split(
+                whereSeparator: { $0.isWhitespace || $0 == "," }
+            ).first.map(String.init) ?? ""
+            guard !firstToken.isEmpty else { continue }
+            guard firstToken.first?.isLetter == true else { continue }
+            guard firstToken.allSatisfy({
+                $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_"
+            }) else { continue }
+            if !subcommands.contains(firstToken) {
+                subcommands.append(firstToken)
+            }
+        }
+        return subcommands
+    }
+
+    // MARK: - Cache persistence
+
+    private static var cachePath: String {
+        let dir = (NSSearchPathForDirectoriesInDomains(
+            .cachesDirectory, .userDomainMask, true).first ?? "/tmp")
+            + "/Ghostty"
+        try? FileManager.default.createDirectory(
+            atPath: dir, withIntermediateDirectories: true)
+        return dir + "/completions.json"
+    }
+
+    private func loadCliCacheFromDisk() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Self.cachePath))
+        else { return }
+        if let loaded = try? JSONDecoder().decode(
+            [String: CachedSubcommands].self, from: data
+        ) {
+            cliCache = loaded
+        }
+    }
+
+    private func saveCliCacheToDisk() {
+        guard let data = try? JSONEncoder().encode(cliCache) else { return }
+        try? data.write(to: URL(fileURLWithPath: Self.cachePath))
+    }
+
+    // MARK: - Subprocess utility
+
+    private func runProcess(launchPath: String, args: [String], timeout: TimeInterval) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = args
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        // Time-bounded wait. If the subprocess hangs we don't want to
+        // freeze the UI.
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            process.waitUntilExit()
+            group.leave()
+        }
+        if group.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            return nil
+        }
+        guard process.terminationStatus == 0 else { return nil }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func findOnPath(_ name: String) -> String? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in path.split(separator: ":") {
+            let full = (String(dir) as NSString).appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: full) {
+                return full
+            }
+        }
+        return nil
+    }
+
+    private func fileMtime(_ path: String) -> TimeInterval? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        else { return nil }
+        return (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
+    }
+
+    // MARK: - Executable source
 
     private func refreshExecutableCacheIfNeeded() {
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
