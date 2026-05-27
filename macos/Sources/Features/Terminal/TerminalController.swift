@@ -582,6 +582,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     window.keyEquivalent = ""
                 }
             }
+
+            // Surface the `last_tab` shortcut on the last tab when no `goto_tab:N`
+            // already covers that slot. The default config binds `cmd+9` to
+            // `last_tab` rather than `goto_tab:9`, so otherwise the 9th-or-later
+            // tab would show no ⌘9 label and macOS wouldn't route the key to it.
+            if let lastTab = windows.last,
+               (lastTab.keyEquivalent ?? "").isEmpty,
+               let equiv = ghostty.config.keyboardShortcut(for: "last_tab") {
+                lastTab.keyEquivalent = "\(equiv)"
+            }
         }
     }
 
