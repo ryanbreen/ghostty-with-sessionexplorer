@@ -341,6 +341,7 @@ pub const App = struct {
                 if (comptime !builtin.target.os.tag.isDarwin()) return false;
                 return try performIpcListSurfaces(alloc, value);
             },
+            .toggle_quick_terminal => return false,
         }
     }
 

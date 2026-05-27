@@ -76,6 +76,9 @@ pub const Action = union(enum) {
     /// Request a JSON listing of all currently open terminal surfaces.
     list_surfaces: ListSurfaces,
 
+    /// Toggle the quick terminal.
+    toggle_quick_terminal: void,
+
     pub const NewWindow = struct {
         /// A list of command arguments to launch in the new window. If this is
         /// `null` the command configured in the config or the user's default
@@ -133,6 +136,7 @@ pub const Action = union(enum) {
     pub const Key = enum(c_int) {
         new_window,
         list_surfaces,
+        toggle_quick_terminal,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_IPC_ACTION_");

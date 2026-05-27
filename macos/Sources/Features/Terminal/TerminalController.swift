@@ -258,6 +258,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Get our parent. Our parent is the one explicitly given to us,
         // otherwise the focused terminal, otherwise an arbitrary one.
         let parent: NSWindow? = explicitParent ?? preferredParent?.window
+        if let parentController = parent?.windowController as? TerminalController {
+            c.isBackgroundOpaque = parentController.isBackgroundOpaque
+        }
 
         if let parent, parent.styleMask.contains(.fullScreen) {
             // If our previous window was fullscreen then we want our new window to
@@ -341,8 +344,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         tree: SplitTree<Ghostty.SurfaceView>,
         position: NSPoint? = nil,
         confirmUndo: Bool = true,
+        inheritBackgroundOpacity: Bool? = nil
     ) -> TerminalController {
         let c = TerminalController.init(ghostty, withSurfaceTree: tree)
+        if let inheritBackgroundOpacity {
+            c.isBackgroundOpaque = inheritBackgroundOpacity
+        }
 
         // Calculate the target frame based on the tree's view bounds
         let treeSize: CGSize? = tree.root?.viewBounds()
@@ -387,7 +394,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     withTarget: ghostty,
                     expiresAfter: target.undoExpiration
                 ) { ghostty in
-                    _ = TerminalController.newWindow(ghostty, tree: tree)
+                    _ = TerminalController.newWindow(
+                        ghostty,
+                        tree: tree,
+                        inheritBackgroundOpacity: inheritBackgroundOpacity
+                    )
                 }
             }
         }
@@ -422,6 +433,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Create a new window and add it to the parent
         let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
+        controller.isBackgroundOpaque = parentController.isBackgroundOpaque
         guard let window = controller.window else { return controller }
 
         // If the parent is miniaturized, then macOS exhibits really strange behaviors
