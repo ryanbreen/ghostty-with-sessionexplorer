@@ -569,9 +569,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         if let windows = window?.tabbedWindows as? [TerminalWindow] {
             for (tab, window) in zip(1..., windows) {
-                // We need to clear any windows beyond this because they have had
-                // a keyEquivalent set previously.
-                guard tab <= 9 else {
+                // We support shortcuts for tabs 1..19 via cmd+N and cmd+shift+N.
+                // Tab 20 and beyond gets nothing; clear any previously set equiv.
+                guard tab <= 19 else {
                     window.keyEquivalent = ""
                     continue
                 }

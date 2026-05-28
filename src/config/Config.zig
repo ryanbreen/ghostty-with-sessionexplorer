@@ -6904,6 +6904,66 @@ pub const Keybinds = struct {
                     .performable = !builtin.target.os.tag.isDarwin(),
                 },
             );
+
+            // Cmd/Alt+Shift+N for goto tab 10+N (and Cmd/Alt+Shift+0 for tab 10).
+            // Mirrors the unshifted block above: register both the physical
+            // digit_N key and the unshifted unicode N codepoint so AZERTY-style
+            // layouts work and the libghostty reverse lookup (used by the
+            // macOS tab bar label) returns the unicode form last.
+            const shift_mods: inputpkg.Mods = if (builtin.target.os.tag.isDarwin())
+                .{ .super = true, .shift = true }
+            else
+                .{ .alt = true, .shift = true };
+            comptime var j: u21 = '1';
+            inline while (j <= '9') : (j += 1) {
+                try self.set.putFlags(
+                    alloc,
+                    .{
+                        .key = .{ .physical = @field(
+                            inputpkg.Key,
+                            std.fmt.comptimePrint("digit_{u}", .{j}),
+                        ) },
+                        .mods = shift_mods,
+                    },
+                    .{ .goto_tab = (j - '1') + 11 },
+                    .{
+                        .performable = !builtin.target.os.tag.isDarwin(),
+                    },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{
+                        .key = .{ .unicode = j },
+                        .mods = shift_mods,
+                    },
+                    .{ .goto_tab = (j - '1') + 11 },
+                    .{
+                        .performable = !builtin.target.os.tag.isDarwin(),
+                    },
+                );
+            }
+            try self.set.putFlags(
+                alloc,
+                .{
+                    .key = .{ .physical = .digit_0 },
+                    .mods = shift_mods,
+                },
+                .{ .goto_tab = 10 },
+                .{
+                    .performable = !builtin.target.os.tag.isDarwin(),
+                },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{
+                    .key = .{ .unicode = '0' },
+                    .mods = shift_mods,
+                },
+                .{ .goto_tab = 10 },
+                .{
+                    .performable = !builtin.target.os.tag.isDarwin(),
+                },
+            );
         }
 
         // Toggle fullscreen
