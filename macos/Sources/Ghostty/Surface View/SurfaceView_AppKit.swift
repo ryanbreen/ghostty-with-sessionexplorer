@@ -801,11 +801,23 @@ extension Ghostty {
 
             // Update our derived config
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
+                guard let self else { return }
                 self.derivedConfig = DerivedConfig(config)
+
                 // Re-push theme into the prompt editor so its colors
                 // track terminal config changes (theme reloads, etc.).
                 self.promptEditorView?.applyTheme()
+
+                // If the cached OSC 11 background color disagrees with the new
+                // config-derived background, drop it so window chrome follows
+                // the new config (e.g., on light/dark theme auto-switch). The
+                // cached value is restored next time the terminal emits a
+                // color_change.
+                if let cached = self.backgroundColor,
+                   cached != self.derivedConfig.backgroundColor
+                {
+                    self.backgroundColor = nil
+                }
             }
         }
 
