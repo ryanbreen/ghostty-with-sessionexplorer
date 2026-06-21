@@ -33,10 +33,12 @@ adrum
 agoodkind
 aindriu80
 ajiblock
+ajr-khll
 akimiojr
 alaasdk
 alanmoyano
 alaviss
+alexbathome
 alexfeijoo44
 alexjuca
 alosarjos
@@ -62,6 +64,7 @@ bleikurr
 bo2themax
 brentschroeter
 brianc442
+c0x0o
 cespare
 charliie-dev
 chernetskyi
@@ -100,6 +103,7 @@ ephemera
 -eric-assetpass Try talking, not botting
 eriksremess
 erral
+exlee
 -f1813483-netizen
 faukah
 filip7
@@ -128,6 +132,7 @@ illiakrauchanka
 j0hnm4r5
 jacobsandlund
 jake-stewart
+jamesarch
 jamylak
 jarred-sumner
 jcollie
@@ -154,6 +159,7 @@ kloneets
 knu
 -kody-w
 koranir
+kostich
 kristina8888
 kristofersoler
 kylesower
@@ -224,6 +230,7 @@ poweruser64
 prakhar54-byte
 priyans-hu
 puzza007
+qappell
 qwerasd205
 raphamorim
 reo101
@@ -236,6 +243,7 @@ rmengelbrecht
 rmunn
 rockorager
 rpfaeffle
+sahilkmishra
 samasaur1
 sandydoo
 secrus
