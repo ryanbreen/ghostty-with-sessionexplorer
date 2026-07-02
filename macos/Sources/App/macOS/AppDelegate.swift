@@ -1554,6 +1554,21 @@ class AppDelegate: NSObject,
         setSecureInput(.toggle)
     }
 
+    // Forcefully release secure keyboard input even when normal balance paths
+    // failed. Useful when an app-deactivation handler never fired or a scoped
+    // surface leaked its enabled state.
+    @IBAction func forceReleaseSecureInput(_ sender: Any) {
+        SecureInput.shared.forceRelease()
+        self.menuSecureInput?.state = .off
+        UserDefaults.ghostty.set(false, forKey: "SecureInput")
+    }
+
+    // Dump full SecureInput state to OSLog for diagnosis. Inspect via:
+    //   log show --last 5m --predicate 'subsystem == "com.mitchellh.ghostty" AND category == "SecureInput"' --info
+    @IBAction func dumpSecureInputState(_ sender: Any) {
+        SecureInput.shared.dumpState()
+    }
+
     @IBAction func toggleQuickTerminal(_ sender: Any) {
         quickController.toggle()
     }

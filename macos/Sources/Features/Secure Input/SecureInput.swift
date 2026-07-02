@@ -30,6 +30,9 @@ class SecureInput: ObservableObject {
     // The scoped objects and whether they're currently in focus.
     private var scoped: [ObjectIdentifier: Bool] = [:]
 
+    // Human-readable label for each scoped object, used in diagnostic dumps.
+    private var labels: [ObjectIdentifier: String] = [:]
+
     // This is set to true when we've successfully called EnableSecureInput.
     @Published private(set) var enabled: Bool = false
 
@@ -63,6 +66,7 @@ class SecureInput: ObservableObject {
         // Reset our state so that we can ensure we set the proper secure input
         // system state
         scoped.removeAll()
+        labels.removeAll()
         global = false
         apply()
     }
@@ -70,15 +74,63 @@ class SecureInput: ObservableObject {
     // Add a scoped object that has secure input enabled. The focused value will
     // determine if the object currently has focus. This is used so that secure
     // input is only enabled while the object is focused.
-    func setScoped(_ object: ObjectIdentifier, focused: Bool) {
+    func setScoped(_ object: ObjectIdentifier, focused: Bool, label: String? = nil) {
         scoped[object] = focused
+        if let label = label, !label.isEmpty {
+            labels[object] = label
+        }
+        Self.logger.notice("setScoped id=\(String(describing: object), privacy: .public) focused=\(focused, privacy: .public) label=\(self.labels[object] ?? "?", privacy: .public)")
         apply()
     }
 
     // Remove a scoped object completely.
     func removeScoped(_ object: ObjectIdentifier) {
+        let label = labels[object] ?? "?"
         scoped[object] = nil
+        labels[object] = nil
+        Self.logger.notice("removeScoped id=\(String(describing: object), privacy: .public) label=\(label, privacy: .public)")
         apply()
+    }
+
+    // Dump full state to OSLog. Callable from a menu item / keybind for diagnosis.
+    func dumpState() {
+        let active = NSApp.isActive
+        Self.logger.notice("=== SecureInput state dump ===")
+        Self.logger.notice("  enabled=\(self.enabled, privacy: .public) desired=\(self.desired, privacy: .public) global=\(self.global, privacy: .public) NSApp.isActive=\(active, privacy: .public)")
+        Self.logger.notice("  scoped count=\(self.scoped.count, privacy: .public)")
+        for (id, focused) in scoped {
+            let label = labels[id] ?? "?"
+            Self.logger.notice("    id=\(String(describing: id), privacy: .public) focused=\(focused, privacy: .public) label=\(label, privacy: .public)")
+        }
+    }
+
+    // Forcefully release secure input. Clears all scoped entries and the global
+    // flag, then calls DisableSecureEventInput repeatedly until our counter
+    // drains or we hit the safety cap. Use when secure input is stuck on and
+    // normal release paths aren't firing.
+    func forceRelease() {
+        Self.logger.notice("forceRelease invoked — clearing state and draining counter")
+        dumpState()
+
+        global = false
+        scoped.removeAll()
+        labels.removeAll()
+
+        // Drain the EnableSecureEventInput counter. The Carbon API is
+        // reference-counted per-process — each Enable must be balanced by a
+        // Disable. If we've leaked enables, we drain until the system reports
+        // no assertion or we hit the cap.
+        var drained = 0
+        let cap = 64
+        while drained < cap {
+            let stillOn = IsSecureEventInputEnabled()
+            if !stillOn { break }
+            _ = DisableSecureEventInput()
+            drained += 1
+        }
+
+        enabled = false
+        Self.logger.notice("forceRelease drained=\(drained, privacy: .public) IsSecureEventInputEnabled=\(IsSecureEventInputEnabled(), privacy: .public)")
     }
 
     private func apply() {
@@ -97,7 +149,7 @@ class SecureInput: ObservableObject {
         }
         if err == noErr {
             enabled = desired
-            Self.logger.debug("secure input state=\(self.enabled, privacy: .public)")
+            Self.logger.notice("apply state=\(self.enabled, privacy: .public) desired=\(self.desired, privacy: .public)")
             return
         }
 
@@ -113,7 +165,7 @@ class SecureInput: ObservableObject {
         let err = EnableSecureEventInput()
         if err == noErr {
             enabled = true
-            Self.logger.debug("secure input enabled on activation")
+            Self.logger.notice("secure input enabled on activation")
             return
         }
 
@@ -121,12 +173,13 @@ class SecureInput: ObservableObject {
     }
 
     @objc private func onDidResignActive(notification: NSNotification) {
+        Self.logger.notice("onDidResignActive enabled=\(self.enabled, privacy: .public) desired=\(self.desired, privacy: .public)")
         // We only want to disable if we're enabled.
         guard enabled else { return }
         let err = DisableSecureEventInput()
         if err == noErr {
             enabled = false
-            Self.logger.debug("secure input disabled on deactivation")
+            Self.logger.notice("secure input disabled on deactivation")
             return
         }
 

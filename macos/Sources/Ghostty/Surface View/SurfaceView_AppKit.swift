@@ -136,7 +136,7 @@ extension Ghostty {
                 let input = SecureInput.shared
                 let id = ObjectIdentifier(self)
                 if passwordInput {
-                    input.setScoped(id, focused: focused)
+                    input.setScoped(id, focused: focused, label: "title=\(self.title)")
                 } else {
                     input.removeScoped(id)
                 }
@@ -498,7 +498,7 @@ extension Ghostty {
 
             // Update our secure input state if we are a password input
             if passwordInput {
-                SecureInput.shared.setScoped(ObjectIdentifier(self), focused: focused)
+                SecureInput.shared.setScoped(ObjectIdentifier(self), focused: focused, label: "title=\(self.title)")
             }
 
             if focused {
