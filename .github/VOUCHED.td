@@ -201,12 +201,14 @@ mpatankar6
 mrconnorkenway
 mrmage
 mtak
+mustafa0x
 natesmyth
 neo773
 neurosnap
 nicholas-ochoa
 nicosuave
 nikicat
+nilsherzig
 nmggithub
 noib3
 nolinmcfarland
@@ -231,6 +233,7 @@ prakhar54-byte
 priyans-hu
 puzza007
 qappell
+quinnypig
 qwerasd205
 raphamorim
 reo101
@@ -246,6 +249,7 @@ rpfaeffle
 sahilkmishra
 samasaur1
 sandydoo
+-schickling-assistant NHITL
 secrus
 seruman
 seyoungjeong
@@ -271,8 +275,10 @@ vaughanandrews
 viruslobster
 vlsi
 voidnv
+williamhcarter
 wyounas
 yabbal
+yak3d
 yamshta
 ydah
 -zaviro
