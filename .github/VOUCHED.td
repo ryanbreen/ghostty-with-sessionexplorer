@@ -47,8 +47,11 @@ andrejdaskalov
 anhthang
 anmitalidev
 anthonyzhoon
+aprilnea
+arvin7liu
 athaapa
 atomk
+aymanbagabas
 b0uks
 b1nar10
 balazs-szucs
@@ -103,6 +106,7 @@ ephemera
 -eric-assetpass Try talking, not botting
 eriksremess
 erral
+escalonc
 eunos-1128
 exlee
 -f1813483-netizen
@@ -203,6 +207,7 @@ mrconnorkenway
 mrmage
 mtak
 mustafa0x
+nagato-yuzuru
 natesmyth
 neo773
 neurosnap
@@ -222,6 +227,7 @@ paaloeye
 pan93412
 pangoraw
 pauley-unsaturated
+pearkes
 peilingjiang
 peterdavehello
 philocalyst
@@ -247,6 +253,7 @@ rmengelbrecht
 rmunn
 rockorager
 rpfaeffle
+ruoyouz
 sahilkmishra
 samasaur1
 sandydoo
@@ -257,6 +264,7 @@ seyoungjeong
 silveirapf
 slsrepo
 sunshine-syz
+tasselx
 tbrundige
 tdgroot
 tdslot

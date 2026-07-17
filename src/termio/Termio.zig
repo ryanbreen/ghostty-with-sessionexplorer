@@ -479,17 +479,15 @@ pub fn resize(
         // Update the size of our terminal state
         try self.terminal.resize(
             self.alloc,
-            grid_size.columns,
-            grid_size.rows,
+            .{
+                .cols = grid_size.columns,
+                .rows = grid_size.rows,
+                .cell_size_px = .{
+                    .width = self.size.cell.width,
+                    .height = self.size.cell.height,
+                },
+            },
         );
-
-        // Update our pixel sizes
-        self.terminal.width_px = grid_size.columns * self.size.cell.width;
-        self.terminal.height_px = grid_size.rows * self.size.cell.height;
-
-        // Disable synchronized output mode so that we show changes
-        // immediately for a resize. This is allowed by the spec.
-        self.terminal.modes.set(.synchronized_output, false);
 
         // If we have size reporting enabled we need to send a report.
         if (self.terminal.modes.get(.in_band_size_reports)) {
@@ -712,11 +710,15 @@ pub fn colorSchemeReportLocked(self: *Termio, td: *ThreadData, force: bool) !voi
     if (!force and !self.renderer_state.terminal.modes.get(.report_color_scheme)) {
         return;
     }
-    const output = switch (self.config.conditional_state.theme) {
-        .light => "\x1B[?997;2n",
-        .dark => "\x1B[?997;1n",
+    const scheme: terminalpkg.device_status.ColorScheme = switch (self.config.conditional_state.theme) {
+        .light => .light,
+        .dark => .dark,
     };
-    try self.queueWrite(td, output, false);
+
+    var buf: [terminalpkg.device_status.max_color_scheme_report_encode_size]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try terminalpkg.device_status.encodeColorSchemeReport(&writer, scheme);
+    try self.queueWrite(td, writer.buffered(), false);
 }
 
 /// ThreadData is the data created and stored in the termio thread
