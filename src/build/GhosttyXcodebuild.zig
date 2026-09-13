@@ -49,7 +49,10 @@ pub fn init(
     };
 
     const env = b.graph.environ_map;
-    const app_path = b.fmt("macos/build/{s}/Ghostty.app", .{xc_config});
+    const app_path = b.fmt("macos/build/{s}/{s}.app", .{
+        xc_config,
+        if (config.optimize == .Debug) "Ghostty" else "Ghostty Dev",
+    });
 
     // Our step to build the Ghostty macOS app.
     const build = build: {
