@@ -52,10 +52,6 @@ const no_trailing_colon =
     \\(?<!:)
 ;
 
-const trailing_spaces_at_eol =
-    \\(?: +(?= *$))?
-;
-
 const dotted_path_lookahead =
     \\(?=[\w\-.~:\/?#@!$&*+;=%]*\.)
 ;
@@ -74,9 +70,7 @@ const path_space_segments =
     "|" ++
     "(?=(?!/)" ++ path_chars ++ "*\\.[A-Za-z0-9]{1,8}(?:\\s|$))" ++
     path_chars ++ "+" ++
-    "))"
-    ++ "{0,8}"
-;
+    "))" ++ "{0,8}";
 
 const quoted_path_search_limit =
     \\1024
@@ -103,14 +97,12 @@ const rooted_or_relative_path_branch =
     path_space_segments ++
     no_trailing_punctuation ++
     no_trailing_colon ++
-    trailing_spaces_at_eol ++
     "|" ++
     non_dotted_path_lookahead ++
     path_chars ++ "+" ++
     path_space_segments ++
     no_trailing_punctuation ++
     no_trailing_colon ++
-    trailing_spaces_at_eol ++
     ")";
 
 // Branch 3: Bare relative paths such as src/config/url.zig.
@@ -123,8 +115,7 @@ const bare_relative_path_branch =
     bare_relative_path_prefix ++
     path_chars ++ "+" ++
     no_trailing_punctuation ++
-    no_trailing_colon ++
-    trailing_spaces_at_eol;
+    no_trailing_colon;
 
 // Branch 4: Quoted file paths should extend through internal spaces until the
 // matching closing quote. We cap the scan to 1024 bytes to bound the work for
@@ -319,7 +310,7 @@ test "url regex" {
         },
         .{
             .input = "../example.py ",
-            .expect = "../example.py ",
+            .expect = "../example.py",
         },
         .{
             .input = "first time ../example.py contributor ",
@@ -378,7 +369,7 @@ test "url regex" {
             .input = "IPv6 in markdown [link](http://[2001:db8::1]/docs)",
             .expect = "http://[2001:db8::1]/docs",
         },
-        // File paths with spaces
+        // Trailing whitespace isn't part of a detected file path.
         .{
             .input = "./spaces-end.   ",
             .expect = "./spaces-end",
@@ -395,6 +386,7 @@ test "url regex" {
             .input = "see /Users/wrb/My Documents/notes.txt here",
             .expect = "/Users/wrb/My Documents/notes.txt",
         },
+        // File paths with internal spaces
         .{
             .input = "./space middle",
             .expect = "./space",
