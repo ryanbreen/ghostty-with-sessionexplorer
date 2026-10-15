@@ -180,11 +180,13 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
 
     //---------------------------------------------------------------
     // Target-specific properties
+    // Fork: Apple Silicon only. Default to the native (arm64) slice
+    // instead of a universal arm64+x86_64 xcframework.
     config.xcframework_target = b.option(
         XCFrameworkTarget,
         "xcframework-target",
         "The target for the xcframework.",
-    ) orelse .universal;
+    ) orelse .native;
 
     //---------------------------------------------------------------
     // Comptime Interfaces

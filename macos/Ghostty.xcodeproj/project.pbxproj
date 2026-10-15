@@ -426,7 +426,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$CONFIGURATION\" = \"ReleaseLocal\" ]; then\n    DEST=\"/Applications/$FULL_PRODUCT_NAME\"\n    rm -rf \"$DEST\"\n    ditto \"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\" \"$DEST\"\n    codesign --force --deep --sign - \"$DEST\"\nfi\n";
+			shellScript = "if [ \"$CONFIGURATION\" = \"ReleaseLocal\" ]; then\n    DEST=\"/Applications/$FULL_PRODUCT_NAME\"\n    rm -rf \"$DEST\"\n    ditto \"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\" \"$DEST\"\n    find \"$DEST\" -type f -perm +111 -print0 | while IFS= read -r -d '' BIN; do\n        if lipo -archs \"$BIN\" 2>/dev/null | grep -qw x86_64; then\n            lipo -remove x86_64 \"$BIN\" -output \"$BIN\"\n        fi\n    done\n    codesign --force --deep --sign - \"$DEST\"\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 		FC501E0B2F46B410007AE49D /* Run SwiftLint */ = {
@@ -504,6 +504,7 @@
 		3B39CAA22B33946300DABEB8 /* ReleaseLocal */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -840,6 +841,7 @@
 		A5B3053E299BEAAB0047F10C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -902,6 +904,7 @@
 		A5B3053F299BEAAB0047F10C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
